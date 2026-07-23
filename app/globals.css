@@ -1,0 +1,36 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: 244 245 247;
+  --card: 255 255 255;
+  --card2: 243 244 246;
+  --border: 224 226 230;
+  --muted: 107 114 128;
+  --muted2: 130 137 148;
+  --fg: 23 23 23;
+  --sidebar: 255 255 255;
+  --sidebar-hover: 243 244 246;
+  --sidebar-active: 219 234 254;
+}
+
+.dark {
+  --bg: 26 26 26;
+  --card: 34 34 34;
+  --card2: 37 37 37;
+  --border: 51 51 51;
+  --muted: 153 153 153;
+  --muted2: 136 136 136;
+  --fg: 255 255 255;
+  /* Deliberately darker/more saturated than --card so the nav rail reads as
+     its own surface, matching the reference app's near-black sidebar. */
+  --sidebar: 15 15 21;
+  --sidebar-hover: 28 28 38;
+  --sidebar-active: 37 47 74;
+}
+
+body {
+  background-color: rgb(var(--bg));
+  color: rgb(var(--fg));
+}

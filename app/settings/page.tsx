@@ -1,0 +1,135 @@
+import { headers } from 'next/headers'
+import { redirect } from 'next/navigation'
+import Link from 'next/link'
+import { SlidersHorizontal } from 'lucide-react'
+import { getServerSession } from '@/lib/serverAuth'
+import { query } from '@/lib/db'
+import { AGENCY_ROLES } from '@/lib/auth'
+import WebhookCard from '@/components/settings/WebhookCard'
+import UsersPanel from '@/components/settings/panels/UsersPanel'
+
+function getBaseUrl() {
+  const h = headers()
+  const host = h.get('host') || 'localhost:3000'
+  const proto = host.startsWith('localhost') ? 'http' : 'https'
+  return `${proto}://${host}`
+}
+
+export default async function SettingsPage() {
+  const session = getServerSession()
+  if (!session) redirect('/login')
+  if (session.role === 'client_counsellor') redirect('/leads')
+
+  const baseUrl = getBaseUrl()
+  const isAgency = AGENCY_ROLES.includes(session.role)
+
+  type ClientRow = {
+    id: string
+    name: string
+    api_key: string
+    meta_page_id: string | null
+    meta_whatsapp_phone_number_id: string | null
+    meta_ad_account_id: string | null
+    google_ads_customer_id: string | null
+  }
+
+  const clients = isAgency
+    ? await query<ClientRow>(
+        'SELECT id, name, api_key, meta_page_id, meta_whatsapp_phone_number_id, meta_ad_account_id, google_ads_customer_id FROM clients ORDER BY name'
+      )
+    : session.clientId
+      ? await query<ClientRow>(
+          'SELECT id, name, api_key, meta_page_id, meta_whatsapp_phone_number_id, meta_ad_account_id, google_ads_customer_id FROM clients WHERE id = $1',
+          [session.clientId]
+        )
+      : []
+
+  const canCustomize = isAgency || session.role === 'client_admin'
+
+  return (
+    <div>
+      <div className="mb-8 flex items-start justify-between">
+        <div>
+          <h1 className="mb-2 text-2xl font-bold text-fg">Settings</h1>
+          <p className="text-muted2">Account and workspace settings.</p>
+        </div>
+        {canCustomize && (
+          <Link
+            href="/settings/customize"
+            className="flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500"
+          >
+            <SlidersHorizontal size={16} /> Customize
+          </Link>
+        )}
+      </div>
+
+      <h2 className="mb-3 text-xs font-semibold uppercase tracking-widest text-muted">
+        Lead Capture &amp; Auto-Intake
+      </h2>
+      <p className="mb-4 max-w-2xl text-sm text-muted2">
+        These endpoints feed leads straight into the CRM the moment someone submits a Meta ad
+        form, fills out a landing page, or messages your WhatsApp number for the first time.
+        Duplicate phone numbers are automatically merged into the existing lead instead of
+        creating a new one.
+      </p>
+
+      <div className="space-y-6">
+        {clients.map((c) => (
+          <div key={c.id} className="rounded-card border border-border bg-card p-5">
+            <h3 className="mb-4 font-bold text-fg">{c.name}</h3>
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+              <WebhookCard
+                title="Meta Lead Ads"
+                description="Paste into your Meta App's Webhooks config (Page subscription, leadgen field)."
+                rows={[
+                  { label: 'Webhook URL', value: `${baseUrl}/api/webhooks/meta-leads` },
+                  { label: 'Facebook Page ID (routing)', value: c.meta_page_id || 'not configured — set clients.meta_page_id' },
+                ]}
+              />
+              <WebhookCard
+                title="Landing Page Form"
+                description="POST { name, phone, email?, grade? } as JSON with this bearer token from your website's form handler."
+                rows={[
+                  { label: 'Webhook URL', value: `${baseUrl}/api/webhooks/landing-page` },
+                  { label: 'API Key (Bearer token)', value: c.api_key },
+                ]}
+              />
+              <WebhookCard
+                title="WhatsApp (Meta Cloud API)"
+                description="Subscribe this URL to the 'messages' field in your Meta App's WhatsApp product config. Use the same Verify Token as your WEBHOOK_VERIFY_TOKEN env var."
+                rows={[
+                  { label: 'Webhook URL', value: `${baseUrl}/api/webhooks/meta-whatsapp` },
+                  { label: 'Phone Number ID (routing)', value: c.meta_whatsapp_phone_number_id || 'not configured — set via Settings > WhatsApp config' },
+                ]}
+              />
+            </div>
+            {isAgency && (
+              <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-3">
+                <WebhookCard
+                  title="Ad Spend Sync"
+                  description="Ad account IDs the daily spend sync reads from. Set clients.meta_ad_account_id / clients.google_ads_customer_id to connect."
+                  rows={[
+                    { label: 'Meta Ad Account ID', value: c.meta_ad_account_id || 'not configured — set clients.meta_ad_account_id' },
+                    { label: 'Google Ads Customer ID', value: c.google_ads_customer_id || 'not configured — set clients.google_ads_customer_id' },
+                  ]}
+                />
+              </div>
+            )}
+          </div>
+        ))}
+        {clients.length === 0 && <p className="text-muted">No institution linked to this account.</p>}
+      </div>
+
+      {canCustomize && (
+        <div className="mt-10">
+          <h2 className="mb-3 text-xs font-semibold uppercase tracking-widest text-muted">Users</h2>
+          <UsersPanel
+            currentUserId={session.id}
+            isAgency={isAgency}
+            clients={clients.map((c) => ({ id: c.id, name: c.name }))}
+          />
+        </div>
+      )}
+    </div>
+  )
+}
