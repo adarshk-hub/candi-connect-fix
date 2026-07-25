@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { ChevronLeft, ChevronRight, LayoutGrid, List } from 'lucide-react'
 import { clsx } from 'clsx'
-import LeadSlideOver from '@/components/lead/LeadSlideOver'
+import LeadSlideOver from '../../components/lead/LeadSlideOver'
 
 interface EventRow {
   id: string
