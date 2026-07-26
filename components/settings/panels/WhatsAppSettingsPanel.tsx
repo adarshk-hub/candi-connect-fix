@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { Check, RefreshCw, Send, MessageSquareText } from 'lucide-react'
+import { Check, RefreshCw, Send, MessageSquareText, Plus } from 'lucide-react'
 import { NURTURE_TEMPLATE_DEFINITIONS } from '@/lib/nurtureTemplateDefinitions'
 import { OPERATIONAL_TEMPLATE_DEFINITIONS } from '@/lib/operationalTemplateDefinitions'
 
@@ -53,6 +53,12 @@ export default function WhatsAppSettingsPanel({ clientId }: { clientId: string }
   const [syncing, setSyncing] = useState(false)
   const [seeding, setSeeding] = useState(false)
   const [seedingOps, setSeedingOps] = useState(false)
+
+  // Custom template form state
+  const [customName, setCustomName] = useState('')
+  const [customCategory, setCustomCategory] = useState<'MARKETING' | 'UTILITY' | 'AUTHENTICATION'>('UTILITY')
+  const [customBody, setCustomBody] = useState('')
+  const [submittingCustom, setSubmittingCustom] = useState(false)
 
   function loadConfig() {
     setLoading(true)
@@ -204,6 +210,47 @@ export default function WhatsAppSettingsPanel({ clientId }: { clientId: string }
       setError(err?.message || 'Network error — could not reach the server')
     } finally {
       setSeedingOps(false)
+    }
+  }
+
+  // Submits a fully custom template — name, category (Marketing/Utility/
+  // Authentication), and body text with {{1}}, {{2}}... variables — via the
+  // generic POST /api/templates/submit endpoint, same one the two default
+  // buttons above call under the hood, just with user-supplied values
+  // instead of a fixed definition list.
+  async function submitCustomTemplate() {
+    if (!customName.trim() || !customBody.trim()) {
+      setError('Template name and body are required.')
+      return
+    }
+    setSubmittingCustom(true)
+    setError('')
+    setStatus('')
+    try {
+      const res = await fetch(`/api/templates/submit`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          clientId,
+          name: customName.trim(),
+          category: customCategory,
+          language: 'en',
+          components: [{ type: 'BODY', text: customBody.trim() }],
+        }),
+      })
+      const b = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setError(b.error || 'Failed to submit template.')
+        return
+      }
+      setStatus(`Submitted "${customName.trim()}" (${customCategory}) to Meta for approval.`)
+      setCustomName('')
+      setCustomBody('')
+      loadTemplates()
+    } catch (err: any) {
+      setError(err?.message || 'Network error — could not reach the server')
+    } finally {
+      setSubmittingCustom(false)
     }
   }
 
@@ -370,6 +417,53 @@ export default function WhatsAppSettingsPanel({ clientId }: { clientId: string }
             </tbody>
           </table>
         )}
+
+        <div className="mt-5 border-t border-border pt-4">
+          <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-fg">
+            <Plus size={14} /> Create Custom Template
+          </h3>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="mb-1 block text-xs text-muted">Template Name</label>
+              <input
+                value={customName}
+                onChange={(e) => setCustomName(e.target.value)}
+                placeholder="e.g. summer_offer_2026"
+                className="w-full rounded-md border border-border bg-card2 px-3 py-2 text-sm text-fg outline-none focus:border-blue-500"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-muted">Category</label>
+              <select
+                value={customCategory}
+                onChange={(e) => setCustomCategory(e.target.value as any)}
+                className="w-full rounded-md border border-border bg-card2 px-3 py-2 text-sm text-fg outline-none focus:border-blue-500"
+              >
+                <option value="UTILITY">Utility</option>
+                <option value="MARKETING">Marketing</option>
+                <option value="AUTHENTICATION">Authentication</option>
+              </select>
+            </div>
+          </div>
+          <div className="mt-3">
+            <label className="mb-1 block text-xs text-muted">Body — use {'{{1}}'}, {'{{2}}'} for variables</label>
+            <textarea
+              value={customBody}
+              onChange={(e) => setCustomBody(e.target.value)}
+              rows={3}
+              placeholder="Hi {{1}}, we have a special offer on {{2}} this month..."
+              className="w-full rounded-md border border-border bg-card2 px-3 py-2 text-sm text-fg outline-none focus:border-blue-500"
+            />
+          </div>
+          <button
+            onClick={submitCustomTemplate}
+            disabled={submittingCustom || !configured}
+            title={!configured ? 'Save WhatsApp config first' : ''}
+            className="mt-3 flex items-center gap-2 rounded-md bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-500 disabled:opacity-50"
+          >
+            <Send size={14} /> {submittingCustom ? 'Submitting…' : 'Submit Template'}
+          </button>
+        </div>
 
         <p className="mt-4 text-xs text-muted">
           {NURTURE_TEMPLATE_DEFINITIONS.length} nurture templates ({NURTURE_TEMPLATE_DEFINITIONS.map((d) => `Day ${d.day}`).join(', ')}) +{' '}
