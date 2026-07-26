@@ -266,10 +266,18 @@ export async function submitAndRecordTemplate(params: {
 // Sends a one-off test message and reports success — used by
 // POST /api/clients/[id]/verify-whatsapp to confirm a newly-saved WABA
 // config actually works before flipping wa_client_config.verified to true.
+// Uses Meta's "hello_world" template — auto-created and pre-approved on
+// every WABA by default — instead of a plain text message. Plain text only
+// works inside an open 24h session window (i.e. the recipient messaged you
+// first); for a first-time test number with no prior conversation, only an
+// approved template can initiate contact. hello_world has zero variables
+// and uses language code "en_US" specifically (not "en" — Meta rejects a
+// mismatched language code as "template not found").
 export async function sendVerificationPing(clientId: string, to: string): Promise<SendResult> {
-  return sendTextMessage({
+  return sendTemplateMessage({
     clientId,
     to,
-    body: 'Candi Connect: WhatsApp number connected successfully. ✅',
+    templateName: 'hello_world',
+    languageCode: 'en_US',
   })
 }
