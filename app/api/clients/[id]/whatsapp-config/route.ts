@@ -45,12 +45,17 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   const body = await req.json().catch(() => null)
   const { phoneNumberId, wabaId, accessToken, displayPhoneNumber } = body || {}
 
-  if (!phoneNumberId || !wabaId || !accessToken) {
+  const existing = (await query('SELECT access_token FROM wa_client_config WHERE client_id = $1', [params.id]))[0]
+
+  if (!phoneNumberId || !wabaId || (!accessToken && !existing)) {
     return NextResponse.json({ error: 'phoneNumberId, wabaId, and accessToken are required' }, { status: 400 })
   }
 
   try {
-    const encryptedToken = encrypt(accessToken)
+    // Keep the existing encrypted token if the field was left blank
+    // ("leave blank to keep current") rather than requiring it on every
+    // save once it's already set.
+    const encryptedToken = accessToken ? encrypt(accessToken) : existing.access_token
 
     const row = (
       await query(
