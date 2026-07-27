@@ -60,6 +60,11 @@ export default function WhatsAppSettingsPanel({ clientId }: { clientId: string }
   const [customBody, setCustomBody] = useState('')
   const [submittingCustom, setSubmittingCustom] = useState(false)
 
+  // Sequence-step template assignment state: day_number -> template_name
+  const [assignments, setAssignments] = useState<Record<number, string>>({})
+  const [assignmentsLoading, setAssignmentsLoading] = useState(true)
+  const [savingDay, setSavingDay] = useState<number | null>(null)
+
   function loadConfig() {
     setLoading(true)
     fetch(`/api/clients/${clientId}/whatsapp-config`)
@@ -87,9 +92,23 @@ export default function WhatsAppSettingsPanel({ clientId }: { clientId: string }
       .finally(() => setTemplatesLoading(false))
   }
 
+  function loadAssignments() {
+    setAssignmentsLoading(true)
+    fetch(`/api/clients/${clientId}/whatsapp-sequence-templates`)
+      .then((r) => (r.ok ? r.json() : []))
+      .then((rows: { day_number: number; template_name: string }[]) => {
+        const map: Record<number, string> = {}
+        for (const row of rows || []) map[row.day_number] = row.template_name
+        setAssignments(map)
+      })
+      .catch(() => {})
+      .finally(() => setAssignmentsLoading(false))
+  }
+
   useEffect(() => {
     loadConfig()
     loadTemplates()
+    loadAssignments()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clientId])
 
@@ -251,6 +270,39 @@ export default function WhatsAppSettingsPanel({ clientId }: { clientId: string }
       setError(err?.message || 'Network error — could not reach the server')
     } finally {
       setSubmittingCustom(false)
+    }
+  }
+
+  // Reassigns which approved template fires on a given sequence day.
+  // Saves immediately on dropdown change (no separate "Save" button per
+  // row) since it's a single, low-risk field.
+  async function assignTemplate(dayNumber: number, templateName: string) {
+    if (!templateName) return
+    setSavingDay(dayNumber)
+    setError('')
+    setStatus('')
+    // Optimistic update — the dropdown reflects the choice immediately;
+    // reverted below if the save actually fails.
+    const previous = assignments[dayNumber]
+    setAssignments((prev) => ({ ...prev, [dayNumber]: templateName }))
+    try {
+      const res = await fetch(`/api/clients/${clientId}/whatsapp-sequence-templates`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dayNumber, templateName, languageCode: 'en' }),
+      })
+      const b = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setAssignments((prev) => ({ ...prev, [dayNumber]: previous }))
+        setError(b.error || `Failed to assign template for Day ${dayNumber}.`)
+        return
+      }
+      setStatus(`Day ${dayNumber} will now send "${templateName}".`)
+    } catch (err: any) {
+      setAssignments((prev) => ({ ...prev, [dayNumber]: previous }))
+      setError(err?.message || 'Network error — could not reach the server')
+    } finally {
+      setSavingDay(null)
     }
   }
 
@@ -417,6 +469,52 @@ export default function WhatsAppSettingsPanel({ clientId }: { clientId: string }
             </tbody>
           </table>
         )}
+
+        <div className="mt-5 border-t border-border pt-4">
+          <h3 className="mb-1 text-sm font-semibold text-fg">Assign Templates to Sequence Steps</h3>
+          <p className="mb-3 text-xs text-muted2">
+            Pick which approved template fires on each day of the nurture sequence. Only templates Meta has
+            approved for this client show up as options — submit and wait for approval first if a step shows
+            "No approved templates yet."
+          </p>
+          {assignmentsLoading ? (
+            <p className="text-sm text-muted">Loading…</p>
+          ) : (
+            <div className="space-y-2">
+              {NURTURE_TEMPLATE_DEFINITIONS.map((def, i) => {
+                const approvedTemplates = templates.filter((t) => t.status === 'approved')
+                const current = assignments[def.day] || ''
+                return (
+                  <div key={def.day} className="flex items-center gap-3 rounded-md border border-border bg-card2 px-3 py-2">
+                    <span className="w-20 shrink-0 text-xs font-medium text-muted">
+                      Step {i + 1} · Day {def.day}
+                    </span>
+                    {approvedTemplates.length === 0 ? (
+                      <span className="text-xs text-muted">No approved templates yet</span>
+                    ) : (
+                      <select
+                        value={current}
+                        onChange={(e) => assignTemplate(def.day, e.target.value)}
+                        disabled={savingDay === def.day}
+                        className="flex-1 rounded-md border border-border bg-card px-2 py-1.5 text-xs text-fg outline-none focus:border-blue-500 disabled:opacity-50"
+                      >
+                        <option value="" disabled>
+                          Select a template…
+                        </option>
+                        {approvedTemplates.map((t) => (
+                          <option key={t.id} value={t.name}>
+                            {t.name}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                    {savingDay === def.day && <RefreshCw size={12} className="shrink-0 animate-spin text-muted" />}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
 
         <div className="mt-5 border-t border-border pt-4">
           <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-fg">
