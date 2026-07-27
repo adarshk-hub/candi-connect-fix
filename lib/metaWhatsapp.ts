@@ -1,8 +1,32 @@
+import crypto from 'crypto'
 import { query } from './db'
 import { decrypt } from './waEncryption'
 import { defaultClientCode } from './waTemplateNaming'
 
 const GRAPH_API_URL = process.env.META_GRAPH_API_URL || 'https://graph.facebook.com/v19.0'
+
+// Meta's "Require App Secret" setting (App Dashboard > Settings > Advanced)
+// makes every Graph API call using this app's tokens require an
+// appsecret_proof query param — an HMAC-SHA256 of the access token, keyed
+// by the app secret, proving the caller actually holds the secret and not
+// just a leaked token. Returns '' (omitted) if META_APP_SECRET isn't set,
+// so this only activates once that env var is configured.
+function appSecretProof(accessToken: string): string {
+  const appSecret = process.env.META_APP_SECRET
+  if (!appSecret) return ''
+  return crypto.createHmac('sha256', appSecret).update(accessToken).digest('hex')
+}
+
+// Appends appsecret_proof to a Graph API URL that already has an access
+// token attached via the Authorization header. Meta expects this proof as
+// a query param regardless of whether the token itself is sent via header
+// or query string.
+function withAppSecretProof(url: string, accessToken: string): string {
+  const proof = appSecretProof(accessToken)
+  if (!proof) return url
+  const separator = url.includes('?') ? '&' : '?'
+  return `${url}${separator}appsecret_proof=${proof}`
+}
 
 export interface SendResult {
   ok: boolean
@@ -43,7 +67,8 @@ export async function getClientCredentials(clientId: string): Promise<WaCredenti
 
 async function callMetaSendApi(creds: WaCredentials, payload: Record<string, any>): Promise<SendResult> {
   try {
-    const res = await fetch(`${GRAPH_API_URL}/${creds.phoneNumberId}/messages`, {
+    const url = withAppSecretProof(`${GRAPH_API_URL}/${creds.phoneNumberId}/messages`, creds.accessToken)
+    const res = await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -134,7 +159,7 @@ export async function submitTemplateToMeta(params: {
   components: any[]
 }): Promise<TemplateSubmitResult> {
   try {
-    const res = await fetch(`${GRAPH_API_URL}/${params.wabaId}/message_templates`, {
+    const res = await fetch(withAppSecretProof(`${GRAPH_API_URL}/${params.wabaId}/message_templates`, params.accessToken), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${params.accessToken}` },
       body: JSON.stringify({
