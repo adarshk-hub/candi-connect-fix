@@ -1,10 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server'
+import crypto from 'crypto'
 import { query } from '@/lib/db'
 import { getSession } from '@/lib/auth'
 import { canCustomize } from '@/lib/customizeAccess'
 import { decrypt } from '@/lib/waEncryption'
 
 const GRAPH_API_URL = process.env.META_GRAPH_API_URL || 'https://graph.facebook.com/v19.0'
+
+// Same appsecret_proof requirement as lib/metaWhatsapp.ts — this route
+// calls the Graph API directly rather than through that shared client, so
+// it needs its own copy of the proof calculation. See metaWhatsapp.ts for
+// the full explanation of why this exists.
+function appSecretProof(accessToken: string): string {
+  const appSecret = process.env.META_APP_SECRET
+  if (!appSecret) return ''
+  return crypto.createHmac('sha256', appSecret).update(accessToken).digest('hex')
+}
 
 // Polls Meta for the current status of every template still marked
 // 'pending' for this client and updates wa_templates accordingly. Meta
@@ -29,8 +40,9 @@ export async function POST(req: NextRequest, { params }: { params: { clientId: s
   const updated: any[] = []
 
   for (const tmpl of pending) {
+    const proof = appSecretProof(accessToken)
     const res = await fetch(
-      `${GRAPH_API_URL}/${config.waba_id}/message_templates?name=${encodeURIComponent(tmpl.name)}`,
+      `${GRAPH_API_URL}/${config.waba_id}/message_templates?name=${encodeURIComponent(tmpl.name)}${proof ? `&appsecret_proof=${proof}` : ''}`,
       { headers: { Authorization: `Bearer ${accessToken}` } }
     )
     const data = await res.json().catch(() => ({}))
