@@ -291,18 +291,33 @@ export async function submitAndRecordTemplate(params: {
 // Sends a one-off test message and reports success — used by
 // POST /api/clients/[id]/verify-whatsapp to confirm a newly-saved WABA
 // config actually works before flipping wa_client_config.verified to true.
-// Uses Meta's "hello_world" template — auto-created and pre-approved on
-// every WABA by default — instead of a plain text message. Plain text only
-// works inside an open 24h session window (i.e. the recipient messaged you
-// first); for a first-time test number with no prior conversation, only an
-// approved template can initiate contact. hello_world has zero variables
-// and uses language code "en_US" specifically (not "en" — Meta rejects a
-// mismatched language code as "template not found").
+//
+// NOTE: Meta's "hello_world" template is auto-created and pre-approved on
+// every WABA, but it is restricted to Meta's built-in Public Test Numbers
+// only — sending it from a real, verified business phone number fails with
+// (#131058) "Hello World templates can only be sent from the Public Test
+// Numbers." So we use "testing_address" instead, a custom Utility template
+// already approved on this WABA, with fixed placeholder values for its
+// three body variables (this is only used for the connectivity/verify
+// check, so the copy doesn't need to be dynamic). Body:
+// "Hi {{1}}, your delivery address has been successfully updated to {{2}}.
+// Contact {{3}} for any inquiries." — uses language code "en_US" to match
+// how the template was created in Meta.
 export async function sendVerificationPing(clientId: string, to: string): Promise<SendResult> {
   return sendTemplateMessage({
     clientId,
     to,
-    templateName: 'hello_world',
+    templateName: 'testing_address',
     languageCode: 'en_US',
+    components: [
+      {
+        type: 'body',
+        parameters: [
+          { type: 'text', text: 'there' },
+          { type: 'text', text: '123 Test Street' },
+          { type: 'text', text: 'support@candidschools.com' },
+        ],
+      },
+    ],
   })
 }
