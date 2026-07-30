@@ -14,7 +14,7 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
   if (!canCustomize(session, params.id)) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
   const monthsBackParam = req.nextUrl.searchParams.get('monthsBack')
-  const monthsBack = monthsBackParam ? Math.max(1, Math.min(60, Number(monthsBackParam))) : 24
+  const monthsBack = monthsBackParam ? Math.max(1, Math.min(12, Number(monthsBackParam))) : 12
 
   const summary = await getAllTimePricingAnalytics(params.id, monthsBack)
 
