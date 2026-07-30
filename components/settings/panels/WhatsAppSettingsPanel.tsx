@@ -30,19 +30,19 @@ function StatusBadge({ status }: { status: string }) {
   )
 }
 
-interface BillingMonth {
-  month: string
-  currency: string | null
-  totalCost: number
-  totalCount: number
-  byCategory: { category: string; country?: string; count: number; cost: number }[]
+interface BillingTemplate {
+  templateId: string
+  templateName: string
+  sent: number
+  delivered: number
+  read: number
+  cost: number
 }
 
 interface BillingSummary {
-  months: BillingMonth[]
+  templates: BillingTemplate[]
   allTimeTotalCost: number
-  allTimeTotalCount: number
-  currency: string | null
+  allTimeTotalSent: number
   fetchedAt: string
 }
 
@@ -89,7 +89,7 @@ export default function WhatsAppSettingsPanel({ clientId }: { clientId: string }
   function loadBilling() {
     setBillingLoading(true)
     setBillingError('')
-    fetch(`/api/clients/${clientId}/whatsapp-billing?monthsBack=12`)
+    fetch(`/api/clients/${clientId}/whatsapp-billing`)
       .then(async (r) => {
         if (!r.ok) {
           const b = await r.json().catch(() => ({}))
@@ -456,8 +456,9 @@ export default function WhatsAppSettingsPanel({ clientId }: { clientId: string }
           </button>
         </div>
         <p className="mb-4 text-sm text-muted2">
-          Pulled live from Meta's pricing analytics for this WABA. Actual payment is still handled by Meta directly
-          (Business Settings → Billing &amp; Payments) — this is a read-only usage view, not a place to pay.
+          Pulled live from Meta's template analytics for this WABA (last 90 days). Actual payment is still handled
+          by Meta directly (Business Settings → Billing &amp; Payments) — this is a read-only usage view, not a
+          place to pay.
         </p>
 
         {!configured ? (
@@ -465,7 +466,7 @@ export default function WhatsAppSettingsPanel({ clientId }: { clientId: string }
         ) : billingError ? (
           <p className="text-sm text-red-400">{billingError}</p>
         ) : !billing ? (
-          <p className="text-sm text-muted">Click "Load balance" to fetch the current WhatsApp usage cost.</p>
+          <p className="text-sm text-muted">Click "Load balance" to fetch WhatsApp usage and cost.</p>
         ) : (
           <>
             <div className="flex items-center justify-between rounded-md border border-border bg-card2 px-4 py-3">
@@ -479,66 +480,44 @@ export default function WhatsAppSettingsPanel({ clientId }: { clientId: string }
                 </div>
               </div>
               <div className="text-right">
-                <p className="text-xs text-muted">Current balance</p>
-                <p className="text-xl font-bold text-fg">
-                  {billing.currency ? `${billing.currency} ` : '₹ '}
-                  {billing.allTimeTotalCost.toFixed(2)}
-                </p>
+                <p className="text-xs text-muted">Current balance (last 90 days)</p>
+                <p className="text-xl font-bold text-fg">₹ {billing.allTimeTotalCost.toFixed(2)}</p>
               </div>
             </div>
 
-            {(() => {
-              // Aggregate byCategory across every fetched month into one
-              // simple "message type -> count / cost" table.
-              const totals = new Map<string, { count: number; cost: number }>()
-              for (const m of billing.months) {
-                for (const c of m.byCategory) {
-                  const existing = totals.get(c.category)
-                  if (existing) {
-                    existing.count += c.count
-                    existing.cost += c.cost
-                  } else {
-                    totals.set(c.category, { count: c.count, cost: c.cost })
-                  }
-                }
-              }
-              const rows = Array.from(totals.entries())
-                .filter(([, v]) => v.count > 0 || v.cost > 0)
-                .sort((a, b) => b[1].cost - a[1].cost)
-
-              if (rows.length === 0) {
-                return (
-                  <p className="mt-4 text-sm text-muted">
-                    No billed messages found yet — this is expected if only test/free-window messages have been
-                    sent so far.
-                  </p>
-                )
-              }
-
-              return (
-                <table className="mt-4 w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted">
-                      <th className="pb-2 font-medium">Message type</th>
-                      <th className="pb-2 font-medium">Messages sent</th>
-                      <th className="pb-2 font-medium">Cost</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {rows.map(([category, v]) => (
-                      <tr key={category} className="border-b border-border/50 last:border-0">
-                        <td className="py-2 pr-2 text-xs font-medium text-fg">{category}</td>
-                        <td className="py-2 pr-2 text-xs text-muted2">{v.count.toLocaleString()}</td>
-                        <td className="py-2 text-xs text-muted2">
-                          {billing.currency ? `${billing.currency} ` : '₹ '}
-                          {v.cost.toFixed(2)}
-                        </td>
+            {billing.templates.length === 0 ? (
+              <p className="mt-4 text-sm text-muted">
+                No templates with a Meta template ID found for this client yet — submit a template above first, or
+                if you just did, wait a moment and refresh.
+              </p>
+            ) : billing.templates.every((t) => t.sent === 0) ? (
+              <p className="mt-4 text-sm text-muted">
+                No messages sent for any template in the last 90 days yet.
+              </p>
+            ) : (
+              <table className="mt-4 w-full text-sm">
+                <thead>
+                  <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted">
+                    <th className="pb-2 font-medium">Template (message type)</th>
+                    <th className="pb-2 font-medium">Sent</th>
+                    <th className="pb-2 font-medium">Delivered</th>
+                    <th className="pb-2 font-medium">Cost</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {billing.templates
+                    .filter((t) => t.sent > 0 || t.cost > 0)
+                    .map((t) => (
+                      <tr key={t.templateId} className="border-b border-border/50 last:border-0">
+                        <td className="py-2 pr-2 font-mono text-xs text-fg">{t.templateName}</td>
+                        <td className="py-2 pr-2 text-xs text-muted2">{t.sent.toLocaleString()}</td>
+                        <td className="py-2 pr-2 text-xs text-muted2">{t.delivered.toLocaleString()}</td>
+                        <td className="py-2 text-xs text-muted2">₹ {t.cost.toFixed(2)}</td>
                       </tr>
                     ))}
-                  </tbody>
-                </table>
-              )
-            })()}
+                </tbody>
+              </table>
+            )}
           </>
         )}
       </div>
