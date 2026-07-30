@@ -65,6 +65,36 @@ export async function getClientCredentials(clientId: string): Promise<WaCredenti
   return null
 }
 
+interface WaBillingCredentials {
+  wabaId: string
+  accessToken: string
+}
+
+// Like getClientCredentials, but returns the WABA ID instead of the phone
+// number ID — pricing/billing analytics are queried at the WABA level
+// (a WABA can hold multiple phone numbers), not the phone-number level
+// used for sending messages.
+export async function getClientWabaCredentials(clientId: string): Promise<WaBillingCredentials | null> {
+  const row = (
+    await query<{ waba_id: string; access_token: string }>(
+      'SELECT waba_id, access_token FROM wa_client_config WHERE client_id = $1',
+      [clientId]
+    )
+  )[0]
+
+  if (row?.waba_id) {
+    return { wabaId: row.waba_id, accessToken: decrypt(row.access_token) }
+  }
+
+  const fallbackWabaId = process.env.WHATSAPP_WABA_ID
+  const fallbackToken = process.env.WHATSAPP_ACCESS_TOKEN
+  if (fallbackWabaId && fallbackToken) {
+    return { wabaId: fallbackWabaId, accessToken: fallbackToken }
+  }
+
+  return null
+}
+
 async function callMetaSendApi(creds: WaCredentials, payload: Record<string, any>): Promise<SendResult> {
   try {
     const url = withAppSecretProof(`${GRAPH_API_URL}/${creds.phoneNumberId}/messages`, creds.accessToken)
@@ -320,4 +350,157 @@ export async function sendVerificationPing(clientId: string, to: string): Promis
       },
     ],
   })
+}
+
+// ---------------------------------------------------------------------
+// Billing / pricing analytics
+//
+// Meta's pricing_analytics is a field-expansion query on the WABA node
+// (same family as conversation_analytics), e.g.:
+//   GET /{waba-id}?fields=pricing_analytics.start(UNIX).end(UNIX).granularity(MONTHLY)
+// It returns delivered-message cost broken down by category/country over
+// the requested window. NOTE: Meta's exact response field names for this
+// endpoint aren't pinned down here with certainty — the parser below reads
+// the fields we could confirm (cost, volume/count, pricing_category,
+// country) defensively, and always returns the raw per-month response
+// alongside the parsed summary so the UI/caller can inspect real payload
+// shape on first use and this can be tightened if Meta's field names
+// differ slightly from what's assumed here.
+export interface PricingAnalyticsCategoryBreakdown {
+  category: string // e.g. MARKETING, UTILITY, AUTHENTICATION
+  country?: string
+  count: number
+  cost: number
+}
+
+export interface PricingAnalyticsMonth {
+  month: string // 'YYYY-MM'
+  currency: string | null
+  totalCost: number
+  totalCount: number
+  byCategory: PricingAnalyticsCategoryBreakdown[]
+  raw: any // untouched Meta response for this month, for debugging/verification
+}
+
+export interface PricingAnalyticsSummary {
+  months: PricingAnalyticsMonth[]
+  allTimeTotalCost: number
+  allTimeTotalCount: number
+  currency: string | null
+  fetchedAt: string
+}
+
+// Fetches one calendar month of pricing analytics for a WABA.
+async function fetchPricingAnalyticsMonth(
+  creds: WaBillingCredentials,
+  monthStart: Date
+): Promise<PricingAnalyticsMonth> {
+  const start = Math.floor(monthStart.getTime() / 1000)
+  const monthEnd = new Date(Date.UTC(monthStart.getUTCFullYear(), monthStart.getUTCMonth() + 1, 1))
+  const end = Math.floor(Math.min(monthEnd.getTime(), Date.now()) / 1000)
+  const monthLabel = `${monthStart.getUTCFullYear()}-${String(monthStart.getUTCMonth() + 1).padStart(2, '0')}`
+
+  const fields = `pricing_analytics.start(${start}).end(${end}).granularity(MONTHLY)`
+  const url = withAppSecretProof(
+    `${GRAPH_API_URL}/${creds.wabaId}?fields=${encodeURIComponent(fields)}`,
+    creds.accessToken
+  )
+
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${creds.accessToken}` },
+  })
+  const data = await res.json().catch(() => ({}))
+
+  if (!res.ok) {
+    return {
+      month: monthLabel,
+      currency: null,
+      totalCost: 0,
+      totalCount: 0,
+      byCategory: [],
+      raw: data,
+    }
+  }
+
+  // Defensive parse: Meta typically nests results under
+  // data.pricing_analytics.data[].data_points[], each point carrying
+  // cost/volume/pricing_category/country — but field names can vary by
+  // API version, so we walk the structure loosely rather than assuming
+  // one fixed shape.
+  const points: any[] =
+    data?.pricing_analytics?.data?.flatMap((d: any) => d?.data_points || d?.entries || []) || []
+
+  let totalCost = 0
+  let totalCount = 0
+  let currency: string | null = null
+  const byCategory = new Map<string, PricingAnalyticsCategoryBreakdown>()
+
+  for (const p of points) {
+    const cost = Number(p.cost ?? p.total_cost ?? p.amount ?? 0)
+    const count = Number(p.volume ?? p.count ?? p.num_messages ?? p.delivered ?? 0)
+    const category = String(p.pricing_category ?? p.category ?? 'UNKNOWN').toUpperCase()
+    const country = p.country ?? p.country_code ?? undefined
+    currency = currency || p.currency || null
+
+    totalCost += cost
+    totalCount += count
+
+    const key = `${category}:${country || ''}`
+    const existing = byCategory.get(key)
+    if (existing) {
+      existing.cost += cost
+      existing.count += count
+    } else {
+      byCategory.set(key, { category, country, cost, count })
+    }
+  }
+
+  return {
+    month: monthLabel,
+    currency,
+    totalCost,
+    totalCount,
+    byCategory: Array.from(byCategory.values()),
+    raw: data,
+  }
+}
+
+// Loops month-by-month from `monthsBack` months ago through the current
+// month and aggregates pricing_analytics into an all-time summary. Meta's
+// analytics endpoints can cap how much range a single call returns at fine
+// granularity, so we deliberately request one month at a time rather than
+// one big range, and stitch the results together here.
+//
+// Note: per-message billing only started July 1, 2025 — requesting months
+// before that will return zero/empty data from Meta since a different
+// (deprecated) pricing model applied then.
+export async function getAllTimePricingAnalytics(
+  clientId: string,
+  monthsBack: number = 24
+): Promise<PricingAnalyticsSummary | null> {
+  const creds = await getClientWabaCredentials(clientId)
+  if (!creds) return null
+
+  const now = new Date()
+  const months: PricingAnalyticsMonth[] = []
+
+  for (let i = monthsBack - 1; i >= 0; i--) {
+    const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1))
+    if (monthStart.getTime() > now.getTime()) continue
+    // eslint-disable-next-line no-await-in-loop -- intentionally sequential to stay well under Graph API rate limits
+    const monthData = await fetchPricingAnalyticsMonth(creds, monthStart)
+    months.push(monthData)
+  }
+
+  const allTimeTotalCost = months.reduce((sum, m) => sum + m.totalCost, 0)
+  const allTimeTotalCount = months.reduce((sum, m) => sum + m.totalCount, 0)
+  const currency = months.find((m) => m.currency)?.currency || null
+
+  return {
+    months,
+    allTimeTotalCost,
+    allTimeTotalCount,
+    currency,
+    fetchedAt: new Date().toISOString(),
+  }
 }
