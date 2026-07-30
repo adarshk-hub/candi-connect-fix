@@ -353,174 +353,183 @@ export async function sendVerificationPing(clientId: string, to: string): Promis
 }
 
 // ---------------------------------------------------------------------
-// Billing / pricing analytics
+// Billing / usage — built on Meta's template_analytics endpoint
 //
-// Confirmed against Meta's official docs (developers.facebook.com/
-// documentation/business-messaging/whatsapp/analytics):
-//   GET /{waba-id}?fields=pricing_analytics
-//       .start(<unix>).end(<unix>).granularity(MONTHLY|DAILY|HALF_HOUR)
-//       .dimensions(PRICING_CATEGORY,COUNTRY)
-// Response shape:
-//   { "pricing_analytics": { "data": [ { "data_points": [
-//       { start, end, country, tier?, pricing_type, pricing_category,
-//         volume, cost }, ... ] } ] }, "id": "..." }
+// Switched from pricing_analytics (WABA-wide cost/volume by category) to
+// template_analytics (per-template Sent/Delivered/Cost) because it's the
+// more mature, GA, well-documented endpoint — see developers.facebook.com/
+// documentation/business-messaging/whatsapp/analytics#template-analytics.
+// It directly answers "what type of messages have been sent and what did
+// they cost", using template IDs this app already tracks in wa_templates,
+// rather than requiring WABA-wide dimension/category filtering that proved
+// unreliable to get right against pricing_analytics.
 //
-// Two important real constraints (confirmed via live testing):
-// - Max lookback is 1 year (365 days) as of Dec 1, 2025 — requests further
-//   back than that are rejected outright with error_subcode 2388336.
-// - The `dimensions` param must be passed WITHOUT brackets/quotes for this
-//   specific field, e.g. `.dimensions(PRICING_CATEGORY,COUNTRY)` — unlike
-//   conversation_analytics, which expects `.dimensions(["X","Y"])`. Also,
-//   the field-expansion string must NOT be double URL-encoded with
-//   encodeURIComponent() on the whole thing, since that can mangle the
-//   parentheses Graph API expects; only individual values are encoded.
-export interface PricingAnalyticsCategoryBreakdown {
-  category: string // PRICING_CATEGORY, e.g. MARKETING, UTILITY, AUTHENTICATION, SERVICE
-  pricingType?: string // PRICING_TYPE, e.g. REGULAR, FREE_CUSTOMER_SERVICE, FREE_ENTRY_POINT
-  country?: string
-  count: number
-  cost: number
+// Response shape (confirmed from Meta's docs):
+//   GET /{waba-id}/template_analytics
+//       ?start=<unix|YYYY-MM-DD>&end=<unix|YYYY-MM-DD>&granularity=daily
+//       &metric_types=cost,delivered,read,sent
+//       &template_ids=[id1,id2,...]        (max 10 per call)
+//   {
+//     "data": [{
+//       "granularity": "DAILY",
+//       "data_points": [{
+//         "template_id": "...", "start": ..., "end": ...,
+//         "sent": N, "delivered": N, "read": N,
+//         "cost": [{ "type": "amount_spent", "value": 0.03 }, ...]
+//       }]
+//     }]
+//   }
+//
+// Notes:
+// - Template analytics must be "confirmed"/enabled once per WABA before
+//   Meta starts capturing it (POST /{waba-id}?is_enabled_for_insights=true).
+//   This is idempotent and safe to call every time — see enableInsights().
+// - Lookback window is up to 90 days (shorter than pricing_analytics' 365,
+//   but simpler/more reliable, and covers "since this was set up" for a
+//   freshly-onboarded client either way).
+// - Max 10 template_ids per call — if a client has more than 10 templates,
+//   this loops in batches of 10 and merges results.
+
+export interface TemplateAnalyticsRow {
+  templateId: string
+  templateName: string
+  sent: number
+  delivered: number
+  read: number
+  cost: number // sum of "amount_spent" cost entries across the window
 }
 
-export interface PricingAnalyticsMonth {
-  month: string // 'YYYY-MM'
-  currency: string | null
-  totalCost: number
-  totalCount: number
-  byCategory: PricingAnalyticsCategoryBreakdown[]
-  raw: any // untouched Meta response for this month, for debugging/verification
-}
-
-export interface PricingAnalyticsSummary {
-  months: PricingAnalyticsMonth[]
+export interface TemplateAnalyticsSummary {
+  templates: TemplateAnalyticsRow[]
   allTimeTotalCost: number
-  allTimeTotalCount: number
-  currency: string | null
+  allTimeTotalSent: number
   fetchedAt: string
+  raw: any[] // untouched Meta response(s), one per batch call, for debugging
 }
 
-// Fetches one calendar month of pricing analytics for a WABA. Meta's
-// max lookback is 365 days, so callers must not request a monthStart
-// older than ~1 year ago — see getAllTimePricingAnalytics, which caps
-// monthsBack at 12 for this reason.
-async function fetchPricingAnalyticsMonth(
-  creds: WaBillingCredentials,
-  monthStart: Date
-): Promise<PricingAnalyticsMonth> {
-  const start = Math.floor(monthStart.getTime() / 1000)
-  const monthEnd = new Date(Date.UTC(monthStart.getUTCFullYear(), monthStart.getUTCMonth() + 1, 1))
-  const end = Math.floor(Math.min(monthEnd.getTime(), Date.now()) / 1000)
-  const monthLabel = `${monthStart.getUTCFullYear()}-${String(monthStart.getUTCMonth() + 1).padStart(2, '0')}`
+// One-time (idempotent) opt-in required before Meta starts capturing
+// template analytics for a WABA. Safe to call on every load — Meta just
+// no-ops if already enabled, and per the docs this cannot be disabled once
+// turned on, so there's no "undo" state to worry about.
+async function enableTemplateInsights(creds: WaBillingCredentials): Promise<void> {
+  try {
+    const url = withAppSecretProof(
+      `${GRAPH_API_URL}/${creds.wabaId}?is_enabled_for_insights=true`,
+      creds.accessToken
+    )
+    await fetch(url, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${creds.accessToken}` },
+    })
+  } catch {
+    // Best-effort — if this fails (e.g. already enabled, or a transient
+    // network error), the subsequent template_analytics call will simply
+    // return empty data rather than throwing, so nothing else breaks.
+  }
+}
 
-  // Built to match Meta's documented example exactly:
-  //   fields=pricing_analytics.start(...).end(...).granularity(MONTHLY).dimensions(PRICING_CATEGORY,COUNTRY)
-  // Note: no brackets/quotes around the dimensions list, and the field
-  // string as a whole is passed via URLSearchParams (which percent-encodes
-  // parens safely and consistently) rather than a manual encodeURIComponent
-  // wrap that could double-encode or mismatch Meta's parser expectations.
-  const fields = `pricing_analytics.start(${start}).end(${end}).granularity(MONTHLY).dimensions(PRICING_CATEGORY,COUNTRY)`
-  const params = new URLSearchParams({ fields })
-  const baseUrl = `${GRAPH_API_URL}/${creds.wabaId}?${params.toString()}`
+// Fetches Sent/Delivered/Read/Cost for up to 10 template IDs at once.
+async function fetchTemplateAnalyticsBatch(
+  creds: WaBillingCredentials,
+  templateIds: string[],
+  startUnix: number,
+  endUnix: number
+): Promise<any> {
+  const params = new URLSearchParams({
+    start: String(startUnix),
+    end: String(endUnix),
+    granularity: 'daily',
+    metric_types: 'cost,delivered,read,sent',
+    template_ids: `[${templateIds.join(',')}]`,
+  })
+  const baseUrl = `${GRAPH_API_URL}/${creds.wabaId}/template_analytics?${params.toString()}`
   const url = withAppSecretProof(baseUrl, creds.accessToken)
 
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${creds.accessToken}` },
   })
-  const data = await res.json().catch(() => ({}))
-
-  if (!res.ok) {
-    return {
-      month: monthLabel,
-      currency: null,
-      totalCost: 0,
-      totalCount: 0,
-      byCategory: [],
-      raw: data,
-    }
-  }
-
-  // Confirmed shape: data.pricing_analytics.data[].data_points[], each
-  // point carrying cost, volume, pricing_category, pricing_type, country.
-  const points: any[] = data?.pricing_analytics?.data?.flatMap((d: any) => d?.data_points || []) || []
-
-  let totalCost = 0
-  let totalCount = 0
-  let currency: string | null = null
-  const byCategory = new Map<string, PricingAnalyticsCategoryBreakdown>()
-
-  for (const p of points) {
-    const cost = Number(p.cost ?? 0)
-    const count = Number(p.volume ?? 0)
-    const category = String(p.pricing_category ?? 'UNKNOWN').toUpperCase()
-    const pricingType = p.pricing_type ?? undefined
-    const country = p.country ?? undefined
-    // pricing_analytics data points don't carry a currency field per Meta's
-    // docs (cost is implicitly in the WABA's billing currency) — left null
-    // here and, if the WABA config or wa_client_config gains a currency
-    // field later, should be sourced from there instead.
-    currency = currency || null
-
-    totalCost += cost
-    totalCount += count
-
-    const key = `${category}:${pricingType || ''}:${country || ''}`
-    const existing = byCategory.get(key)
-    if (existing) {
-      existing.cost += cost
-      existing.count += count
-    } else {
-      byCategory.set(key, { category, pricingType, country, cost, count })
-    }
-  }
-
-  return {
-    month: monthLabel,
-    currency,
-    totalCost,
-    totalCount,
-    byCategory: Array.from(byCategory.values()),
-    raw: data,
-  }
+  return res.json().catch(() => ({}))
 }
 
-// Loops month-by-month and aggregates pricing_analytics into an all-time
-// summary. Meta's lookback is capped at 365 days (as of Dec 1, 2025), so
-// monthsBack is clamped to 12 regardless of what's requested — going
-// further back will get every month's call rejected with error_subcode
-// 2388336 ("Lookback period exceeded").
-//
-// Also note: per-message billing only started July 1, 2025 — requesting
-// months before that returns zero/empty data under this endpoint since a
-// different (deprecated) pricing model applied then. Since the lookback
-// cap is now well inside that boundary anyway, this is rarely relevant.
-export async function getAllTimePricingAnalytics(
-  clientId: string,
-  monthsBack: number = 12
-): Promise<PricingAnalyticsSummary | null> {
+// Fetches all-time (last 90 days — Meta's max lookback for this endpoint)
+// per-template Sent/Delivered/Cost for a client, using the template IDs
+// already tracked in wa_templates. Returns null if the client has no WABA
+// configured yet, or has no templates with a meta_template_id yet (nothing
+// to query).
+export async function getAllTimeTemplateAnalytics(clientId: string): Promise<TemplateAnalyticsSummary | null> {
   const creds = await getClientWabaCredentials(clientId)
   if (!creds) return null
 
-  const cappedMonthsBack = Math.min(monthsBack, 12)
-  const now = new Date()
-  const months: PricingAnalyticsMonth[] = []
+  const templateRows = await query<{ meta_template_id: string; name: string }>(
+    `SELECT meta_template_id, name FROM wa_templates
+     WHERE client_id = $1 AND meta_template_id IS NOT NULL`,
+    [clientId]
+  )
 
-  for (let i = cappedMonthsBack - 1; i >= 0; i--) {
-    const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1))
-    if (monthStart.getTime() > now.getTime()) continue
-    // eslint-disable-next-line no-await-in-loop -- intentionally sequential to stay well under Graph API rate limits
-    const monthData = await fetchPricingAnalyticsMonth(creds, monthStart)
-    months.push(monthData)
+  if (templateRows.length === 0) {
+    return {
+      templates: [],
+      allTimeTotalCost: 0,
+      allTimeTotalSent: 0,
+      fetchedAt: new Date().toISOString(),
+      raw: [],
+    }
   }
 
-  const allTimeTotalCost = months.reduce((sum, m) => sum + m.totalCost, 0)
-  const allTimeTotalCount = months.reduce((sum, m) => sum + m.totalCount, 0)
-  const currency = months.find((m) => m.currency)?.currency || null
+  await enableTemplateInsights(creds)
+
+  const nameById = new Map(templateRows.map((t) => [t.meta_template_id, t.name]))
+  const endUnix = Math.floor(Date.now() / 1000)
+  const startUnix = endUnix - 89 * 24 * 3600 // Meta's max lookback for this endpoint is 90 days
+
+  const totalsById = new Map<string, TemplateAnalyticsRow>()
+  const rawResponses: any[] = []
+
+  // Batch in groups of 10 (Meta's per-call max for template_ids).
+  for (let i = 0; i < templateRows.length; i += 10) {
+    const batchIds = templateRows.slice(i, i + 10).map((t) => t.meta_template_id)
+    // eslint-disable-next-line no-await-in-loop -- intentionally sequential to stay well under Graph API rate limits
+    const data = await fetchTemplateAnalyticsBatch(creds, batchIds, startUnix, endUnix)
+    rawResponses.push(data)
+
+    const points: any[] = data?.data?.flatMap((d: any) => d?.data_points || []) || []
+    for (const p of points) {
+      const templateId = String(p.template_id ?? '')
+      if (!templateId) continue
+      const sent = Number(p.sent ?? 0)
+      const delivered = Number(p.delivered ?? 0)
+      const read = Number(p.read ?? 0)
+      const costEntries: any[] = Array.isArray(p.cost) ? p.cost : []
+      const amountSpent = costEntries.find((c) => c.type === 'amount_spent')?.value ?? 0
+
+      const existing = totalsById.get(templateId)
+      if (existing) {
+        existing.sent += sent
+        existing.delivered += delivered
+        existing.read += read
+        existing.cost += Number(amountSpent)
+      } else {
+        totalsById.set(templateId, {
+          templateId,
+          templateName: nameById.get(templateId) || templateId,
+          sent,
+          delivered,
+          read,
+          cost: Number(amountSpent),
+        })
+      }
+    }
+  }
+
+  const templates = Array.from(totalsById.values()).sort((a, b) => b.cost - a.cost)
+  const allTimeTotalCost = templates.reduce((sum, t) => sum + t.cost, 0)
+  const allTimeTotalSent = templates.reduce((sum, t) => sum + t.sent, 0)
 
   return {
-    months,
+    templates,
     allTimeTotalCost,
-    allTimeTotalCount,
-    currency,
+    allTimeTotalSent,
     fetchedAt: new Date().toISOString(),
+    raw: rawResponses,
   }
 }
