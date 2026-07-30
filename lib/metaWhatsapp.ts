@@ -2,25 +2,17 @@ import crypto from 'crypto'
 import { query } from './db'
 import { decrypt } from './waEncryption'
 import { defaultClientCode } from './waTemplateNaming'
+import { debitForMessage, refundMessage, attachWamidToLatestDebit } from './waWallet'
+import { DEFAULT_MESSAGE_CATEGORY } from './waCreditRates'
 
 const GRAPH_API_URL = process.env.META_GRAPH_API_URL || 'https://graph.facebook.com/v19.0'
 
-// Meta's "Require App Secret" setting (App Dashboard > Settings > Advanced)
-// makes every Graph API call using this app's tokens require an
-// appsecret_proof query param — an HMAC-SHA256 of the access token, keyed
-// by the app secret, proving the caller actually holds the secret and not
-// just a leaked token. Returns '' (omitted) if META_APP_SECRET isn't set,
-// so this only activates once that env var is configured.
 function appSecretProof(accessToken: string): string {
   const appSecret = process.env.META_APP_SECRET
   if (!appSecret) return ''
   return crypto.createHmac('sha256', appSecret).update(accessToken).digest('hex')
 }
 
-// Appends appsecret_proof to a Graph API URL that already has an access
-// token attached via the Authorization header. Meta expects this proof as
-// a query param regardless of whether the token itself is sent via header
-// or query string.
 function withAppSecretProof(url: string, accessToken: string): string {
   const proof = appSecretProof(accessToken)
   if (!proof) return url
@@ -39,11 +31,6 @@ interface WaCredentials {
   accessToken: string
 }
 
-// Per-client credentials come from wa_client_config (BYO WABA per client).
-// Falls back to the single default/test WHATSAPP_ACCESS_TOKEN /
-// WHATSAPP_PHONE_NUMBER_ID env vars when a client hasn't configured their
-// own number yet, so the integration is testable end-to-end before every
-// client has been onboarded with their own WABA.
 export async function getClientCredentials(clientId: string): Promise<WaCredentials | null> {
   const row = (
     await query<{ phone_number_id: string; access_token: string }>(
@@ -90,7 +77,8 @@ async function callMetaSendApi(creds: WaCredentials, payload: Record<string, any
 // Sends a free-form session reply (only valid inside the 24hr customer
 // service window). Until a client has WHATSAPP_ACCESS_TOKEN configured
 // (either via wa_client_config or the default env vars), sends are logged
-// and stubbed as successful so the Action/reply UI stays usable in dev.
+// and stubbed as successful so the Action/reply UI stays usable in dev —
+// stubbed sends are not billed against the wallet.
 export async function sendTextMessage(params: {
   clientId: string
   to: string
@@ -102,16 +90,50 @@ export async function sendTextMessage(params: {
     return { ok: true, wamid: `stub-${Date.now()}` }
   }
 
-  return callMetaSendApi(creds, {
+  // Pre-debit the WCC wallet before contacting Meta at all — if there's
+  // no balance left, the message is blocked here and the caller should
+  // surface "please recharge" rather than attempting the send.
+  const debit = await debitForMessage({ clientId: params.clientId, category: 'session' })
+  if (!debit.ok) {
+    return { ok: false, error: debit.error }
+  }
+
+  const result = await callMetaSendApi(creds, {
     to: params.to,
     type: 'text',
     text: { body: params.body },
   })
+
+  if (!result.ok) {
+    // Meta rejected the send after we'd already charged for it — make
+    // the client whole again.
+    await refundMessage({ clientId: params.clientId, category: 'session' })
+  }
+
+  return result
+}
+
+// Looks up the category (marketing/utility/authentication) a template
+// was submitted under, since sendTemplateMessage's caller only ever
+// passes the template name — needed to pick the right WCC rate. Falls
+// back to the default rate bucket for templates not in our own registry
+// (e.g. the fixed "testing_address" verification-ping template).
+async function getTemplateCategory(clientId: string, templateName: string): Promise<string> {
+  const row = (
+    await query<{ category: string | null }>(
+      'SELECT category FROM wa_templates WHERE client_id = $1 AND name = $2 LIMIT 1',
+      [clientId, templateName]
+    )
+  )[0]
+  return (row?.category || DEFAULT_MESSAGE_CATEGORY).toLowerCase()
 }
 
 // Sends an approved template message — used for nurture sequence sends and
 // any first-touch/outside-24hr-window message, since templates are the
-// only message type Meta allows outside an open session.
+// only message type Meta allows outside an open session. This covers
+// marketing, utility, and authentication template sends, broadcasts (just
+// repeated calls to this function), and any media/document header inside
+// the template — all billed at that template's category rate.
 export async function sendTemplateMessage(params: {
   clientId: string
   to: string
@@ -127,7 +149,18 @@ export async function sendTemplateMessage(params: {
     return { ok: true, wamid: `stub-${Date.now()}` }
   }
 
-  return callMetaSendApi(creds, {
+  const category = await getTemplateCategory(params.clientId, params.templateName)
+
+  const debit = await debitForMessage({
+    clientId: params.clientId,
+    category,
+    templateName: params.templateName,
+  })
+  if (!debit.ok) {
+    return { ok: false, error: debit.error }
+  }
+
+  const result = await callMetaSendApi(creds, {
     to: params.to,
     type: 'template',
     template: {
@@ -136,6 +169,18 @@ export async function sendTemplateMessage(params: {
       components: params.components || [],
     },
   })
+
+  if (!result.ok) {
+    await refundMessage({ clientId: params.clientId, category, templateName: params.templateName })
+  } else if (result.wamid) {
+    await attachWamidToLatestDebit({
+      clientId: params.clientId,
+      templateName: params.templateName,
+      wamid: result.wamid,
+    })
+  }
+
+  return result
 }
 
 export interface TemplateSubmitResult {
@@ -188,11 +233,6 @@ export async function submitTemplateToMeta(params: {
   }
 }
 
-// Every WhatsApp template name is namespaced per client as {CODE}_{slug}
-// (see lib/waTemplateNaming.ts) so two clients never collide on the same
-// Meta template name. Reads the code saved on the clients row; if none has
-// been set yet (client hasn't touched Settings > WhatsApp), derives one
-// from the client's name and persists it so it stays stable from here on.
 export async function getOrCreateClientTemplateCode(clientId: string): Promise<string> {
   const row = (
     await query<{ name: string; wa_template_code: string | null }>(
@@ -208,17 +248,10 @@ export async function getOrCreateClientTemplateCode(clientId: string): Promise<s
   return code
 }
 
-// Sends one of the event-triggered lifecycle templates (post-visit
-// summary, visit reminders, no-show reschedule — see
-// lib/operationalTemplateDefinitions.ts) via direct Meta Cloud API. This
-// is the direct-Meta replacement for the old sendAisensyTemplate() calls —
-// same call sites (stage-change trigger, visit reminder cron, no-show
-// handler), same {@link SendResult} shape, no BSP in the path.
 export async function sendOperationalTemplate(params: {
   clientId: string
   to: string
   slug: string
-  /** Ordered {{1}}, {{2}}... values. Defaults to [destinationName] for the common single-variable case. */
   bodyParams?: string[]
   destinationName?: string
 }): Promise<SendResult> {
@@ -243,11 +276,6 @@ export interface SeedTemplateResult {
   rejectionReason?: string
 }
 
-// Submits one template to Meta and upserts the result into wa_templates.
-// Shared by the nurture-defaults seeder (which additionally wires each
-// result into wa_sequence_templates by day) and the operational-templates
-// seeder (which doesn't need day wiring — those fire on lifecycle events,
-// not a schedule).
 export async function submitAndRecordTemplate(params: {
   clientId: string
   wabaId: string
@@ -288,21 +316,6 @@ export async function submitAndRecordTemplate(params: {
   return { name: params.name, status: submitted.status, rejectionReason: submitted.rejectionReason }
 }
 
-// Sends a one-off test message and reports success — used by
-// POST /api/clients/[id]/verify-whatsapp to confirm a newly-saved WABA
-// config actually works before flipping wa_client_config.verified to true.
-//
-// NOTE: Meta's "hello_world" template is auto-created and pre-approved on
-// every WABA, but it is restricted to Meta's built-in Public Test Numbers
-// only — sending it from a real, verified business phone number fails with
-// (#131058) "Hello World templates can only be sent from the Public Test
-// Numbers." So we use "testing_address" instead, a custom Utility template
-// already approved on this WABA, with fixed placeholder values for its
-// three body variables (this is only used for the connectivity/verify
-// check, so the copy doesn't need to be dynamic). Body:
-// "Hi {{1}}, your delivery address has been successfully updated to {{2}}.
-// Contact {{3}} for any inquiries." — uses language code "en_US" to match
-// how the template was created in Meta.
 export async function sendVerificationPing(clientId: string, to: string): Promise<SendResult> {
   return sendTemplateMessage({
     clientId,
