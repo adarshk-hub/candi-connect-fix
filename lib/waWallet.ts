@@ -136,15 +136,46 @@ export interface RechargeResult {
   netAmount: number
 }
 
+// Looks up a recharge transaction by Razorpay payment id, if one was
+// already recorded — used to make creditRecharge idempotent when both
+// the browser's POST /wallet/verify callback and the Razorpay webhook
+// (app/api/webhooks/razorpay) try to credit the same payment.
+async function findRechargeByPaymentId(razorpayPaymentId: string): Promise<RechargeResult | null> {
+  const row = (
+    await query<{ gross_amount: string; cut_amount: string; amount: string; balance_after: string }>(
+      `SELECT gross_amount, cut_amount, amount, balance_after
+       FROM wa_wallet_transactions
+       WHERE type = 'recharge' AND razorpay_payment_id = $1
+       LIMIT 1`,
+      [razorpayPaymentId]
+    )
+  )[0]
+  if (!row) return null
+  return {
+    balanceAfter: Number(row.balance_after),
+    grossAmount: Number(row.gross_amount),
+    cutAmount: Number(row.cut_amount),
+    netAmount: Number(row.amount),
+  }
+}
+
 // Credits a Razorpay recharge to the wallet, withholding the platform
 // cut (see RECHARGE_CUT_PERCENTAGE) before crediting the rest. Called
-// only after the Razorpay payment signature has been verified.
+// only after the Razorpay payment signature has been verified — either
+// by POST /wallet/verify (browser callback) or the Razorpay webhook
+// (server-to-server backup for when the browser callback never fires,
+// e.g. the tab closes right after payment). Idempotent: calling this
+// twice for the same razorpayPaymentId credits the wallet only once —
+// the second call just returns the original result.
 export async function creditRecharge(params: {
   clientId: string
   grossAmount: number
   razorpayOrderId: string
   razorpayPaymentId: string
 }): Promise<RechargeResult> {
+  const existing = await findRechargeByPaymentId(params.razorpayPaymentId)
+  if (existing) return existing
+
   await getOrCreateWallet(params.clientId)
 
   const cutAmount = Math.round(params.grossAmount * RECHARGE_CUT_PERCENTAGE * 100) / 100
@@ -162,12 +193,28 @@ export async function creditRecharge(params: {
 
   const balanceAfter = Number(updated.balance)
 
-  await query(
-    `INSERT INTO wa_wallet_transactions
-       (client_id, type, gross_amount, cut_amount, razorpay_order_id, razorpay_payment_id, amount, balance_after)
-     VALUES ($1, 'recharge', $2, $3, $4, $5, $6, $7)`,
-    [params.clientId, params.grossAmount, cutAmount, params.razorpayOrderId, params.razorpayPaymentId, netAmount, balanceAfter]
-  )
+  try {
+    await query(
+      `INSERT INTO wa_wallet_transactions
+         (client_id, type, gross_amount, cut_amount, razorpay_order_id, razorpay_payment_id, amount, balance_after)
+       VALUES ($1, 'recharge', $2, $3, $4, $5, $6, $7)`,
+      [params.clientId, params.grossAmount, cutAmount, params.razorpayOrderId, params.razorpayPaymentId, netAmount, balanceAfter]
+    )
+  } catch (err: any) {
+    // Unique-violation on razorpay_payment_id means the webhook and the
+    // browser callback raced each other and both reached this point —
+    // the balance update above already double-applied, so undo it and
+    // return whichever row actually won the race.
+    if (err?.code === '23505') {
+      await query(
+        `UPDATE wa_client_wallet SET balance = balance - $2, updated_at = now() WHERE client_id = $1`,
+        [params.clientId, netAmount]
+      )
+      const winner = await findRechargeByPaymentId(params.razorpayPaymentId)
+      if (winner) return winner
+    }
+    throw err
+  }
 
   return { balanceAfter, grossAmount: params.grossAmount, cutAmount, netAmount }
 }
