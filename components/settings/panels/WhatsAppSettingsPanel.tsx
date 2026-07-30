@@ -85,7 +85,6 @@ export default function WhatsAppSettingsPanel({ clientId }: { clientId: string }
   const [billing, setBilling] = useState<BillingSummary | null>(null)
   const [billingLoading, setBillingLoading] = useState(false)
   const [billingError, setBillingError] = useState('')
-  const [showAllMonths, setShowAllMonths] = useState(false)
 
   function loadBilling() {
     setBillingLoading(true)
@@ -150,10 +149,9 @@ export default function WhatsAppSettingsPanel({ clientId }: { clientId: string }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clientId])
 
-  useEffect(() => {
-    if (configured) loadBilling()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [configured, clientId])
+  // Billing is intentionally NOT auto-loaded on mount — only fetched when
+  // the admin clicks the button below, to avoid firing a Graph API call
+  // (12 sequential requests) every time this settings page is opened.
 
   async function saveConfig() {
     setSaving(true)
@@ -453,85 +451,96 @@ export default function WhatsAppSettingsPanel({ clientId }: { clientId: string }
             title={!configured ? 'Save WhatsApp config first' : ''}
             className="flex items-center gap-2 rounded-md border border-border bg-card2 px-3 py-1.5 text-xs font-medium text-fg hover:bg-card disabled:opacity-50"
           >
-            <RefreshCw size={14} className={billingLoading ? 'animate-spin' : ''} /> {billingLoading ? 'Refreshing…' : 'Refresh'}
+            <RefreshCw size={14} className={billingLoading ? 'animate-spin' : ''} />{' '}
+            {billingLoading ? 'Loading…' : billing ? 'Refresh' : 'Load balance'}
           </button>
         </div>
         <p className="mb-4 text-sm text-muted2">
-          Pulled live from Meta's pricing analytics for this WABA. Only delivered Marketing, Utility, and
-          Authentication template messages are billed — replies inside an open 24h chat window are free. Actual
-          payment is still handled by Meta directly (Business Settings → Billing &amp; Payments); this is a
-          read-only usage view.
+          Pulled live from Meta's pricing analytics for this WABA. Actual payment is still handled by Meta directly
+          (Business Settings → Billing &amp; Payments) — this is a read-only usage view, not a place to pay.
         </p>
 
         {!configured ? (
           <p className="text-sm text-muted">Save your WhatsApp config above first.</p>
-        ) : billingLoading && !billing ? (
-          <p className="text-sm text-muted">Loading billing data…</p>
         ) : billingError ? (
           <p className="text-sm text-red-400">{billingError}</p>
-        ) : billing ? (
+        ) : !billing ? (
+          <p className="text-sm text-muted">Click "Load balance" to fetch the current WhatsApp usage cost.</p>
+        ) : (
           <>
-            <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-3">
-              <div className="rounded-md border border-border bg-card2 p-3">
-                <p className="text-xs text-muted">All-time total cost</p>
-                <p className="mt-1 text-xl font-bold text-fg">
-                  {billing.currency ? `${billing.currency} ` : ''}
+            <div className="flex items-center justify-between rounded-md border border-border bg-card2 px-4 py-3">
+              <div className="flex items-center gap-3">
+                <div className="flex h-10 w-10 items-center justify-center rounded-full bg-card text-muted">
+                  <IndianRupee size={18} />
+                </div>
+                <div>
+                  <p className="text-sm font-semibold text-fg">Candi Connect</p>
+                  <p className="text-xs text-muted2">WABA ID: {wabaId || '—'}</p>
+                </div>
+              </div>
+              <div className="text-right">
+                <p className="text-xs text-muted">Current balance</p>
+                <p className="text-xl font-bold text-fg">
+                  {billing.currency ? `${billing.currency} ` : '₹ '}
                   {billing.allTimeTotalCost.toFixed(2)}
                 </p>
               </div>
-              <div className="rounded-md border border-border bg-card2 p-3">
-                <p className="text-xs text-muted">All-time messages billed</p>
-                <p className="mt-1 text-xl font-bold text-fg">{billing.allTimeTotalCount.toLocaleString()}</p>
-              </div>
-              <div className="rounded-md border border-border bg-card2 p-3">
-                <p className="text-xs text-muted">Last refreshed</p>
-                <p className="mt-1 text-sm text-fg">{new Date(billing.fetchedAt).toLocaleString()}</p>
-              </div>
             </div>
 
-            {billing.months.every((m) => m.totalCount === 0) ? (
-              <p className="text-sm text-muted">
-                No billed messages found in the last 24 months. This is expected if you've only sent test/verify
-                messages so far, or if sends have stayed inside free windows (customer-service replies, utility
-                templates within an open chat).
-              </p>
-            ) : (
-              <>
-                <table className="w-full text-sm">
+            {(() => {
+              // Aggregate byCategory across every fetched month into one
+              // simple "message type -> count / cost" table.
+              const totals = new Map<string, { count: number; cost: number }>()
+              for (const m of billing.months) {
+                for (const c of m.byCategory) {
+                  const existing = totals.get(c.category)
+                  if (existing) {
+                    existing.count += c.count
+                    existing.cost += c.cost
+                  } else {
+                    totals.set(c.category, { count: c.count, cost: c.cost })
+                  }
+                }
+              }
+              const rows = Array.from(totals.entries())
+                .filter(([, v]) => v.count > 0 || v.cost > 0)
+                .sort((a, b) => b[1].cost - a[1].cost)
+
+              if (rows.length === 0) {
+                return (
+                  <p className="mt-4 text-sm text-muted">
+                    No billed messages found yet — this is expected if only test/free-window messages have been
+                    sent so far.
+                  </p>
+                )
+              }
+
+              return (
+                <table className="mt-4 w-full text-sm">
                   <thead>
                     <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted">
-                      <th className="pb-2 font-medium">Month</th>
-                      <th className="pb-2 font-medium">Messages billed</th>
+                      <th className="pb-2 font-medium">Message type</th>
+                      <th className="pb-2 font-medium">Messages sent</th>
                       <th className="pb-2 font-medium">Cost</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {billing.months
-                      .slice()
-                      .reverse()
-                      .filter((m) => showAllMonths || m.totalCount > 0)
-                      .map((m) => (
-                        <tr key={m.month} className="border-b border-border/50 last:border-0">
-                          <td className="py-2 pr-2 font-mono text-xs text-fg">{m.month}</td>
-                          <td className="py-2 pr-2 text-xs text-muted2">{m.totalCount.toLocaleString()}</td>
-                          <td className="py-2 text-xs text-muted2">
-                            {m.currency ? `${m.currency} ` : ''}
-                            {m.totalCost.toFixed(2)}
-                          </td>
-                        </tr>
-                      ))}
+                    {rows.map(([category, v]) => (
+                      <tr key={category} className="border-b border-border/50 last:border-0">
+                        <td className="py-2 pr-2 text-xs font-medium text-fg">{category}</td>
+                        <td className="py-2 pr-2 text-xs text-muted2">{v.count.toLocaleString()}</td>
+                        <td className="py-2 text-xs text-muted2">
+                          {billing.currency ? `${billing.currency} ` : '₹ '}
+                          {v.cost.toFixed(2)}
+                        </td>
+                      </tr>
+                    ))}
                   </tbody>
                 </table>
-                <button
-                  onClick={() => setShowAllMonths((s) => !s)}
-                  className="mt-2 text-xs text-muted underline hover:text-fg"
-                >
-                  {showAllMonths ? 'Hide zero-usage months' : 'Show all months (incl. zero usage)'}
-                </button>
-              </>
-            )}
+              )
+            })()}
           </>
-        ) : null}
+        )}
       </div>
 
       <div className="rounded-card border border-border bg-card p-5">
