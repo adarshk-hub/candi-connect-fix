@@ -359,10 +359,11 @@ export async function sendVerificationPing(clientId: string, to: string): Promis
 // template_analytics (per-template Sent/Delivered/Cost) because it's the
 // more mature, GA, well-documented endpoint — see developers.facebook.com/
 // documentation/business-messaging/whatsapp/analytics#template-analytics.
-// It directly answers "what type of messages have been sent and what did
-// they cost", using template IDs this app already tracks in wa_templates,
-// rather than requiring WABA-wide dimension/category filtering that proved
-// unreliable to get right against pricing_analytics.
+// Template IDs are fetched live from Meta's message_templates endpoint
+// (fetchAllTemplatesFromMeta below), NOT from the local wa_templates
+// table — a template created directly in Meta's WhatsApp Manager (rather
+// than submitted through this app) would otherwise be invisible here even
+// if it's the one actually being sent and billed.
 //
 // Response shape (confirmed from Meta's docs):
 //   GET /{waba-id}/template_analytics
@@ -451,20 +452,47 @@ async function fetchTemplateAnalyticsBatch(
   return res.json().catch(() => ({}))
 }
 
+// Fetches the live list of templates for a WABA directly from Meta,
+// rather than relying on the local wa_templates table — which only
+// contains templates submitted *through this app*. Templates created
+// directly in Meta's WhatsApp Manager (e.g. a manually-created test
+// template) would otherwise be invisible to billing/usage reporting even
+// though they're the ones actually being sent and billed.
+async function fetchAllTemplatesFromMeta(
+  creds: WaBillingCredentials
+): Promise<{ id: string; name: string }[]> {
+  const results: { id: string; name: string }[] = []
+  let url: string | null = withAppSecretProof(
+    `${GRAPH_API_URL}/${creds.wabaId}/message_templates?fields=id,name&limit=100`,
+    creds.accessToken
+  )
+
+  // Follow pagination in case a WABA has more than 100 templates.
+  while (url) {
+    // eslint-disable-next-line no-await-in-loop -- pagination is inherently sequential
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${creds.accessToken}` } })
+    // eslint-disable-next-line no-await-in-loop
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) break
+    for (const t of data?.data || []) {
+      if (t?.id && t?.name) results.push({ id: String(t.id), name: String(t.name) })
+    }
+    url = data?.paging?.next || null
+  }
+
+  return results
+}
+
 // Fetches all-time (last 90 days — Meta's max lookback for this endpoint)
-// per-template Sent/Delivered/Cost for a client, using the template IDs
-// already tracked in wa_templates. Returns null if the client has no WABA
-// configured yet, or has no templates with a meta_template_id yet (nothing
-// to query).
+// per-template Sent/Delivered/Cost for a client, using the live list of
+// templates from Meta directly (see fetchAllTemplatesFromMeta above) —
+// not just the ones this app happens to have submitted itself. Returns
+// null if the client has no WABA configured yet.
 export async function getAllTimeTemplateAnalytics(clientId: string): Promise<TemplateAnalyticsSummary | null> {
   const creds = await getClientWabaCredentials(clientId)
   if (!creds) return null
 
-  const templateRows = await query<{ meta_template_id: string; name: string }>(
-    `SELECT meta_template_id, name FROM wa_templates
-     WHERE client_id = $1 AND meta_template_id IS NOT NULL`,
-    [clientId]
-  )
+  const templateRows = await fetchAllTemplatesFromMeta(creds)
 
   if (templateRows.length === 0) {
     return {
@@ -478,7 +506,7 @@ export async function getAllTimeTemplateAnalytics(clientId: string): Promise<Tem
 
   await enableTemplateInsights(creds)
 
-  const nameById = new Map(templateRows.map((t) => [t.meta_template_id, t.name]))
+  const nameById = new Map(templateRows.map((t) => [t.id, t.name]))
   const endUnix = Math.floor(Date.now() / 1000)
   const startUnix = endUnix - 89 * 24 * 3600 // Meta's max lookback for this endpoint is 90 days
 
@@ -487,7 +515,7 @@ export async function getAllTimeTemplateAnalytics(clientId: string): Promise<Tem
 
   // Batch in groups of 10 (Meta's per-call max for template_ids).
   for (let i = 0; i < templateRows.length; i += 10) {
-    const batchIds = templateRows.slice(i, i + 10).map((t) => t.meta_template_id)
+    const batchIds = templateRows.slice(i, i + 10).map((t) => t.id)
     // eslint-disable-next-line no-await-in-loop -- intentionally sequential to stay well under Graph API rate limits
     const data = await fetchTemplateAnalyticsBatch(creds, batchIds, startUnix, endUnix)
     rawResponses.push(data)
