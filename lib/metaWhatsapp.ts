@@ -355,19 +355,28 @@ export async function sendVerificationPing(clientId: string, to: string): Promis
 // ---------------------------------------------------------------------
 // Billing / pricing analytics
 //
-// Meta's pricing_analytics is a field-expansion query on the WABA node
-// (same family as conversation_analytics), e.g.:
-//   GET /{waba-id}?fields=pricing_analytics.start(UNIX).end(UNIX).granularity(MONTHLY)
-// It returns delivered-message cost broken down by category/country over
-// the requested window. NOTE: Meta's exact response field names for this
-// endpoint aren't pinned down here with certainty — the parser below reads
-// the fields we could confirm (cost, volume/count, pricing_category,
-// country) defensively, and always returns the raw per-month response
-// alongside the parsed summary so the UI/caller can inspect real payload
-// shape on first use and this can be tightened if Meta's field names
-// differ slightly from what's assumed here.
+// Confirmed against Meta's official docs (developers.facebook.com/
+// documentation/business-messaging/whatsapp/analytics):
+//   GET /{waba-id}?fields=pricing_analytics
+//       .start(<unix>).end(<unix>).granularity(MONTHLY|DAILY|HALF_HOUR)
+//       .dimensions(PRICING_CATEGORY,COUNTRY)
+// Response shape:
+//   { "pricing_analytics": { "data": [ { "data_points": [
+//       { start, end, country, tier?, pricing_type, pricing_category,
+//         volume, cost }, ... ] } ] }, "id": "..." }
+//
+// Two important real constraints (confirmed via live testing):
+// - Max lookback is 1 year (365 days) as of Dec 1, 2025 — requests further
+//   back than that are rejected outright with error_subcode 2388336.
+// - The `dimensions` param must be passed WITHOUT brackets/quotes for this
+//   specific field, e.g. `.dimensions(PRICING_CATEGORY,COUNTRY)` — unlike
+//   conversation_analytics, which expects `.dimensions(["X","Y"])`. Also,
+//   the field-expansion string must NOT be double URL-encoded with
+//   encodeURIComponent() on the whole thing, since that can mangle the
+//   parentheses Graph API expects; only individual values are encoded.
 export interface PricingAnalyticsCategoryBreakdown {
-  category: string // e.g. MARKETING, UTILITY, AUTHENTICATION
+  category: string // PRICING_CATEGORY, e.g. MARKETING, UTILITY, AUTHENTICATION, SERVICE
+  pricingType?: string // PRICING_TYPE, e.g. REGULAR, FREE_CUSTOMER_SERVICE, FREE_ENTRY_POINT
   country?: string
   count: number
   cost: number
@@ -390,7 +399,10 @@ export interface PricingAnalyticsSummary {
   fetchedAt: string
 }
 
-// Fetches one calendar month of pricing analytics for a WABA.
+// Fetches one calendar month of pricing analytics for a WABA. Meta's
+// max lookback is 365 days, so callers must not request a monthStart
+// older than ~1 year ago — see getAllTimePricingAnalytics, which caps
+// monthsBack at 12 for this reason.
 async function fetchPricingAnalyticsMonth(
   creds: WaBillingCredentials,
   monthStart: Date
@@ -400,11 +412,16 @@ async function fetchPricingAnalyticsMonth(
   const end = Math.floor(Math.min(monthEnd.getTime(), Date.now()) / 1000)
   const monthLabel = `${monthStart.getUTCFullYear()}-${String(monthStart.getUTCMonth() + 1).padStart(2, '0')}`
 
-  const fields = `pricing_analytics.start(${start}).end(${end}).granularity(MONTHLY)`
-  const url = withAppSecretProof(
-    `${GRAPH_API_URL}/${creds.wabaId}?fields=${encodeURIComponent(fields)}`,
-    creds.accessToken
-  )
+  // Built to match Meta's documented example exactly:
+  //   fields=pricing_analytics.start(...).end(...).granularity(MONTHLY).dimensions(PRICING_CATEGORY,COUNTRY)
+  // Note: no brackets/quotes around the dimensions list, and the field
+  // string as a whole is passed via URLSearchParams (which percent-encodes
+  // parens safely and consistently) rather than a manual encodeURIComponent
+  // wrap that could double-encode or mismatch Meta's parser expectations.
+  const fields = `pricing_analytics.start(${start}).end(${end}).granularity(MONTHLY).dimensions(PRICING_CATEGORY,COUNTRY)`
+  const params = new URLSearchParams({ fields })
+  const baseUrl = `${GRAPH_API_URL}/${creds.wabaId}?${params.toString()}`
+  const url = withAppSecretProof(baseUrl, creds.accessToken)
 
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${creds.accessToken}` },
@@ -422,13 +439,9 @@ async function fetchPricingAnalyticsMonth(
     }
   }
 
-  // Defensive parse: Meta typically nests results under
-  // data.pricing_analytics.data[].data_points[], each point carrying
-  // cost/volume/pricing_category/country — but field names can vary by
-  // API version, so we walk the structure loosely rather than assuming
-  // one fixed shape.
-  const points: any[] =
-    data?.pricing_analytics?.data?.flatMap((d: any) => d?.data_points || d?.entries || []) || []
+  // Confirmed shape: data.pricing_analytics.data[].data_points[], each
+  // point carrying cost, volume, pricing_category, pricing_type, country.
+  const points: any[] = data?.pricing_analytics?.data?.flatMap((d: any) => d?.data_points || []) || []
 
   let totalCost = 0
   let totalCount = 0
@@ -436,22 +449,27 @@ async function fetchPricingAnalyticsMonth(
   const byCategory = new Map<string, PricingAnalyticsCategoryBreakdown>()
 
   for (const p of points) {
-    const cost = Number(p.cost ?? p.total_cost ?? p.amount ?? 0)
-    const count = Number(p.volume ?? p.count ?? p.num_messages ?? p.delivered ?? 0)
-    const category = String(p.pricing_category ?? p.category ?? 'UNKNOWN').toUpperCase()
-    const country = p.country ?? p.country_code ?? undefined
-    currency = currency || p.currency || null
+    const cost = Number(p.cost ?? 0)
+    const count = Number(p.volume ?? 0)
+    const category = String(p.pricing_category ?? 'UNKNOWN').toUpperCase()
+    const pricingType = p.pricing_type ?? undefined
+    const country = p.country ?? undefined
+    // pricing_analytics data points don't carry a currency field per Meta's
+    // docs (cost is implicitly in the WABA's billing currency) — left null
+    // here and, if the WABA config or wa_client_config gains a currency
+    // field later, should be sourced from there instead.
+    currency = currency || null
 
     totalCost += cost
     totalCount += count
 
-    const key = `${category}:${country || ''}`
+    const key = `${category}:${pricingType || ''}:${country || ''}`
     const existing = byCategory.get(key)
     if (existing) {
       existing.cost += cost
       existing.count += count
     } else {
-      byCategory.set(key, { category, country, cost, count })
+      byCategory.set(key, { category, pricingType, country, cost, count })
     }
   }
 
@@ -465,26 +483,28 @@ async function fetchPricingAnalyticsMonth(
   }
 }
 
-// Loops month-by-month from `monthsBack` months ago through the current
-// month and aggregates pricing_analytics into an all-time summary. Meta's
-// analytics endpoints can cap how much range a single call returns at fine
-// granularity, so we deliberately request one month at a time rather than
-// one big range, and stitch the results together here.
+// Loops month-by-month and aggregates pricing_analytics into an all-time
+// summary. Meta's lookback is capped at 365 days (as of Dec 1, 2025), so
+// monthsBack is clamped to 12 regardless of what's requested — going
+// further back will get every month's call rejected with error_subcode
+// 2388336 ("Lookback period exceeded").
 //
-// Note: per-message billing only started July 1, 2025 — requesting months
-// before that will return zero/empty data from Meta since a different
-// (deprecated) pricing model applied then.
+// Also note: per-message billing only started July 1, 2025 — requesting
+// months before that returns zero/empty data under this endpoint since a
+// different (deprecated) pricing model applied then. Since the lookback
+// cap is now well inside that boundary anyway, this is rarely relevant.
 export async function getAllTimePricingAnalytics(
   clientId: string,
-  monthsBack: number = 24
+  monthsBack: number = 12
 ): Promise<PricingAnalyticsSummary | null> {
   const creds = await getClientWabaCredentials(clientId)
   if (!creds) return null
 
+  const cappedMonthsBack = Math.min(monthsBack, 12)
   const now = new Date()
   const months: PricingAnalyticsMonth[] = []
 
-  for (let i = monthsBack - 1; i >= 0; i--) {
+  for (let i = cappedMonthsBack - 1; i >= 0; i--) {
     const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1))
     if (monthStart.getTime() > now.getTime()) continue
     // eslint-disable-next-line no-await-in-loop -- intentionally sequential to stay well under Graph API rate limits
