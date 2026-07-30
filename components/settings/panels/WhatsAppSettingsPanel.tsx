@@ -90,7 +90,7 @@ export default function WhatsAppSettingsPanel({ clientId }: { clientId: string }
   function loadBilling() {
     setBillingLoading(true)
     setBillingError('')
-    fetch(`/api/clients/${clientId}/whatsapp-billing?monthsBack=24`)
+    fetch(`/api/clients/${clientId}/whatsapp-billing?monthsBack=12`)
       .then(async (r) => {
         if (!r.ok) {
           const b = await r.json().catch(() => ({}))
