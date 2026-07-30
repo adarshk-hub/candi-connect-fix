@@ -1,22 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getSession } from '@/lib/auth'
 import { canCustomize } from '@/lib/customizeAccess'
-import { getAllTimePricingAnalytics } from '@/lib/metaWhatsapp'
+import { getAllTimeTemplateAnalytics } from '@/lib/metaWhatsapp'
 
-// Returns an all-time WhatsApp messaging cost summary for this client,
-// pulled live from Meta's pricing_analytics (looped month-by-month — see
-// lib/metaWhatsapp.ts for why). Optional ?monthsBack=N query param controls
-// how far back to look (default 24 months); Meta has no billing data before
-// July 1, 2025 (when per-message pricing started), so anything before that
-// will simply come back empty.
+// Returns a per-template WhatsApp usage/cost summary for this client,
+// pulled live from Meta's template_analytics (Sent/Delivered/Cost per
+// template, covering the last 90 days — Meta's max lookback for this
+// endpoint). See lib/metaWhatsapp.ts for why this replaced the earlier
+// pricing_analytics-based approach.
 export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
   const session = getSession(req)
   if (!canCustomize(session, params.id)) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
-  const monthsBackParam = req.nextUrl.searchParams.get('monthsBack')
-  const monthsBack = monthsBackParam ? Math.max(1, Math.min(12, Number(monthsBackParam))) : 12
-
-  const summary = await getAllTimePricingAnalytics(params.id, monthsBack)
+  const summary = await getAllTimeTemplateAnalytics(params.id)
 
   if (!summary) {
     return NextResponse.json(
