@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { Check, RefreshCw, Send, MessageSquareText, Plus, IndianRupee } from 'lucide-react'
+import { Check, RefreshCw, Send, MessageSquareText, Plus } from 'lucide-react'
 import { NURTURE_TEMPLATE_DEFINITIONS } from '@/lib/nurtureTemplateDefinitions'
 import { OPERATIONAL_TEMPLATE_DEFINITIONS } from '@/lib/operationalTemplateDefinitions'
 
@@ -28,22 +28,6 @@ function StatusBadge({ status }: { status: string }) {
       {status}
     </span>
   )
-}
-
-interface BillingTemplate {
-  templateId: string
-  templateName: string
-  sent: number
-  delivered: number
-  read: number
-  cost: number
-}
-
-interface BillingSummary {
-  templates: BillingTemplate[]
-  allTimeTotalCost: number
-  allTimeTotalSent: number
-  fetchedAt: string
 }
 
 export default function WhatsAppSettingsPanel({ clientId }: { clientId: string }) {
@@ -80,27 +64,6 @@ export default function WhatsAppSettingsPanel({ clientId }: { clientId: string }
   const [assignments, setAssignments] = useState<Record<number, string>>({})
   const [assignmentsLoading, setAssignmentsLoading] = useState(true)
   const [savingDay, setSavingDay] = useState<number | null>(null)
-
-  // Billing / usage state
-  const [billing, setBilling] = useState<BillingSummary | null>(null)
-  const [billingLoading, setBillingLoading] = useState(false)
-  const [billingError, setBillingError] = useState('')
-
-  function loadBilling() {
-    setBillingLoading(true)
-    setBillingError('')
-    fetch(`/api/clients/${clientId}/whatsapp-billing`)
-      .then(async (r) => {
-        if (!r.ok) {
-          const b = await r.json().catch(() => ({}))
-          throw new Error(b.error || 'Could not load billing data')
-        }
-        return r.json()
-      })
-      .then((data: BillingSummary) => setBilling(data))
-      .catch((err: any) => setBillingError(err?.message || 'Could not load billing data'))
-      .finally(() => setBillingLoading(false))
-  }
 
   function loadConfig() {
     setLoading(true)
@@ -148,10 +111,6 @@ export default function WhatsAppSettingsPanel({ clientId }: { clientId: string }
     loadAssignments()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clientId])
-
-  // Billing is intentionally NOT auto-loaded on mount — only fetched when
-  // the admin clicks the button below, to avoid firing a Graph API call
-  // (12 sequential requests) every time this settings page is opened.
 
   async function saveConfig() {
     setSaving(true)
@@ -438,88 +397,6 @@ export default function WhatsAppSettingsPanel({ clientId }: { clientId: string }
 
         {error && <p className="mt-4 text-sm text-red-400">{error}</p>}
         {status && <p className="mt-4 text-sm text-green-400">{status}</p>}
-      </div>
-
-      <div className="rounded-card border border-border bg-card p-5">
-        <div className="mb-1 flex items-center justify-between">
-          <h2 className="flex items-center gap-2 text-lg font-bold text-fg">
-            <IndianRupee size={18} /> Billing &amp; Usage
-          </h2>
-          <button
-            onClick={loadBilling}
-            disabled={billingLoading || !configured}
-            title={!configured ? 'Save WhatsApp config first' : ''}
-            className="flex items-center gap-2 rounded-md border border-border bg-card2 px-3 py-1.5 text-xs font-medium text-fg hover:bg-card disabled:opacity-50"
-          >
-            <RefreshCw size={14} className={billingLoading ? 'animate-spin' : ''} />{' '}
-            {billingLoading ? 'Loading…' : billing ? 'Refresh' : 'Load balance'}
-          </button>
-        </div>
-        <p className="mb-4 text-sm text-muted2">
-          Pulled live from Meta's template analytics for this WABA (last 90 days). Actual payment is still handled
-          by Meta directly (Business Settings → Billing &amp; Payments) — this is a read-only usage view, not a
-          place to pay.
-        </p>
-
-        {!configured ? (
-          <p className="text-sm text-muted">Save your WhatsApp config above first.</p>
-        ) : billingError ? (
-          <p className="text-sm text-red-400">{billingError}</p>
-        ) : !billing ? (
-          <p className="text-sm text-muted">Click "Load balance" to fetch WhatsApp usage and cost.</p>
-        ) : (
-          <>
-            <div className="flex items-center justify-between rounded-md border border-border bg-card2 px-4 py-3">
-              <div className="flex items-center gap-3">
-                <div className="flex h-10 w-10 items-center justify-center rounded-full bg-card text-muted">
-                  <IndianRupee size={18} />
-                </div>
-                <div>
-                  <p className="text-sm font-semibold text-fg">Candi Connect</p>
-                  <p className="text-xs text-muted2">WABA ID: {wabaId || '—'}</p>
-                </div>
-              </div>
-              <div className="text-right">
-                <p className="text-xs text-muted">Current balance (last 90 days)</p>
-                <p className="text-xl font-bold text-fg">₹ {billing.allTimeTotalCost.toFixed(2)}</p>
-              </div>
-            </div>
-
-            {billing.templates.length === 0 ? (
-              <p className="mt-4 text-sm text-muted">
-                No templates with a Meta template ID found for this client yet — submit a template above first, or
-                if you just did, wait a moment and refresh.
-              </p>
-            ) : billing.templates.every((t) => t.sent === 0) ? (
-              <p className="mt-4 text-sm text-muted">
-                No messages sent for any template in the last 90 days yet.
-              </p>
-            ) : (
-              <table className="mt-4 w-full text-sm">
-                <thead>
-                  <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted">
-                    <th className="pb-2 font-medium">Template (message type)</th>
-                    <th className="pb-2 font-medium">Sent</th>
-                    <th className="pb-2 font-medium">Delivered</th>
-                    <th className="pb-2 font-medium">Cost</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {billing.templates
-                    .filter((t) => t.sent > 0 || t.cost > 0)
-                    .map((t) => (
-                      <tr key={t.templateId} className="border-b border-border/50 last:border-0">
-                        <td className="py-2 pr-2 font-mono text-xs text-fg">{t.templateName}</td>
-                        <td className="py-2 pr-2 text-xs text-muted2">{t.sent.toLocaleString()}</td>
-                        <td className="py-2 pr-2 text-xs text-muted2">{t.delivered.toLocaleString()}</td>
-                        <td className="py-2 text-xs text-muted2">₹ {t.cost.toFixed(2)}</td>
-                      </tr>
-                    ))}
-                </tbody>
-              </table>
-            )}
-          </>
-        )}
       </div>
 
       <div className="rounded-card border border-border bg-card p-5">
