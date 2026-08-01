@@ -17,6 +17,54 @@ import {
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
+  Radio,
+} from 'lucide-react'
+import ThemeToggle from './ThemeToggle'
+
+interface SidebarUser {
+  fullName: string | null
+  role: string
+}
+
+const ROLE_LABEL: Record<string, string> = {
+  agency_admin: 'Admin',
+  agency_staff: 'Staff',
+  client_admin: 'Client Admin',
+  client_counsellor: 'Counsellor',
+}
+
+function NavItem({
+  href,
+  icon: Icon,
+  label,
+  active,
+  collapsed,
+}: {
+  href: string
+  icon: any
+  label: string
+  active: boolean
+  collapsed: boolean
+}) {
+  return ('use client'
+
+import { useEffect, useState } from 'react'
+import Link from 'next/link'
+import { usePathname, useRouter, useSearchParams } from 'next/navigation'
+import { clsx } from 'clsx'
+import {
+  LayoutDashboard,
+  Users,
+  CalendarClock,
+  CalendarDays,
+  Settings,
+  LogOut,
+  Flame,
+  Snowflake,
+  ThermometerSun,
+  CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react'
 import ThemeToggle from './ThemeToggle'
 
@@ -46,6 +94,21 @@ function NavItem({
   collapsed: boolean
 }) {
   return (
+    <Link
+      href={href}
+      title={collapsed ? label : undefined}
+      className={clsx(
+        'flex items-center gap-3 rounded-md border-l-2 py-2 text-sm transition-colors',
+        collapsed ? 'justify-center border-l-0 px-0' : 'px-3',
+        active
+          ? 'border-blue-500 bg-sidebar-active font-medium text-fg'
+          : 'border-transparent text-muted2 hover:bg-sidebar-hover hover:text-fg'
+      )}
+    >
+      <Icon size={18} />
+      {!collapsed && label}
+    </Link>
+
     <Link
       href={href}
       title={collapsed ? label : undefined}
@@ -138,6 +201,10 @@ export default function Sidebar({ user }: { user: SidebarUser | null }) {
             </div>
           )}
         </div>
+
+        {user?.role !== 'client_counsellor' && (
+          <NavItem href="/broadcasts" icon={Radio} label="Broadcasts" active={pathname === '/broadcasts'} collapsed={collapsed} />
+        )}
       </nav>
 
       <div className={clsx('w-full space-y-1 border-t border-border pt-3', collapsed && 'flex flex-col items-center')}>
