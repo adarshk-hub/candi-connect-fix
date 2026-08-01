@@ -14,6 +14,7 @@ import HistoryTab from './tabs/HistoryTab'
 import WhatsAppTab from './tabs/WhatsAppTab'
 import VisitTab from './tabs/VisitTab'
 import EmailTab from './tabs/EmailTab'
+import TagEditor from './TagEditor'
 
 type TabKey = 'info' | 'whatsapp' | 'email' | 'visit' | 'followup' | 'history'
 
@@ -109,6 +110,10 @@ export default function LeadSlideOver({ leadId, onClose }: { leadId: string; onC
                     />
                   </div>
                 </div>
+              </div>
+
+              <div className="mt-4">
+                <TagEditor leadId={lead.id} clientId={lead.client_id} />
               </div>
             </div>
 
