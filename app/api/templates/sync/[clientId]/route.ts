@@ -73,7 +73,7 @@ export async function POST(req: NextRequest, { params }: { params: { clientId: s
 
       await query(
         `UPDATE wa_templates
-         SET status = $1, rejection_reason = $2, approved_at = CASE WHEN $1 = 'approved' THEN now() ELSE approved_at END
+         SET status = $1::varchar, rejection_reason = $2, approved_at = CASE WHEN $1::varchar = 'approved' THEN now() ELSE approved_at END
          WHERE id = $3`,
         [newStatus, rejectionReason, tmpl.id]
       )
