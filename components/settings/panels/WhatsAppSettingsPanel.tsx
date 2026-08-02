@@ -178,12 +178,25 @@ export default function WhatsAppSettingsPanel({ clientId }: { clientId: string }
   async function syncStatus() {
     setSyncing(true)
     setError('')
+    setStatus('')
     try {
       const res = await fetch(`/api/templates/sync/${clientId}`, { method: 'POST' })
+      const b = await res.json().catch(() => ({}))
       if (!res.ok) {
-        const b = await res.json().catch(() => ({}))
         setError(b.error || 'Could not check template availability with Meta.')
         return
+      }
+      if (b.errors?.length > 0) {
+        const first = b.errors[0]
+        setError(
+          `Meta couldn't confirm ${b.errors.length} template(s). "${first.name}": ${
+            first.metaError?.message || first.reason || 'Unknown error'
+          }`
+        )
+      } else if (b.updated?.length > 0) {
+        setStatus(`Checked ${b.updated.length} template(s) — statuses refreshed from Meta.`)
+      } else {
+        setStatus('No pending templates to check, or Meta still reports them as pending.')
       }
       loadTemplates()
     } catch (err: any) {
