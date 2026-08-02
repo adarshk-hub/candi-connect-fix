@@ -1,107 +1,18 @@
 import { query } from './db'
 import { sendTemplateMessage } from './metaWhatsapp'
+import { buildAudienceQuery, previewAudience as previewAudienceShared, BroadcastFilters, AudienceLead } from './leadAudience'
 
-export interface BroadcastFilters {
-  tags: string[]
-  tagsMode: 'any' | 'all'
-  stageKeys: string[]
-  createdFrom?: string | null // YYYY-MM-DD
-  createdTo?: string | null
-  lastContactedFrom?: string | null
-  lastContactedTo?: string | null
-}
-
-interface AudienceQuery {
-  whereSql: string
-  params: any[]
-}
-
-// Builds the WHERE clause + params for "which leads match this
-// broadcast's filters", shared by both the live-count preview and the
-// actual recipient-list insert at send time so they can never disagree.
-// "Last contacted" is defined as the most recent whatsapp_messages row
-// (inbound or outbound) for the lead — there's no separate
-// "last_contacted_at" column on leads, so this correlates via a
-// subquery rather than requiring a schema change or a trigger to keep a
-// duplicate column in sync.
-function buildAudienceQuery(clientId: string, filters: BroadcastFilters): AudienceQuery {
-  const where: string[] = ['l.client_id = $1']
-  const params: any[] = [clientId]
-
-  if (filters.tags.length > 0) {
-    params.push(filters.tags)
-    const tagsParamIdx = params.length
-    if (filters.tagsMode === 'all') {
-      // Lead must have a tag row for every tag in the filter list.
-      where.push(
-        `(SELECT COUNT(DISTINCT tag) FROM lead_tags WHERE lead_id = l.id AND tag = ANY($${tagsParamIdx})) = ${filters.tags.length}`
-      )
-    } else {
-      where.push(`EXISTS (SELECT 1 FROM lead_tags WHERE lead_id = l.id AND tag = ANY($${tagsParamIdx}))`)
-    }
-  }
-
-  if (filters.stageKeys.length > 0) {
-    params.push(filters.stageKeys)
-    where.push(`l.pipeline_stage = ANY($${params.length})`)
-  }
-
-  if (filters.createdFrom) {
-    params.push(filters.createdFrom)
-    where.push(`l.created_at >= $${params.length}`)
-  }
-  if (filters.createdTo) {
-    params.push(filters.createdTo)
-    where.push(`l.created_at < ($${params.length}::date + INTERVAL '1 day')`)
-  }
-
-  if (filters.lastContactedFrom) {
-    params.push(filters.lastContactedFrom)
-    where.push(
-      `EXISTS (SELECT 1 FROM whatsapp_messages wm WHERE wm.lead_id = l.id AND wm.created_at >= $${params.length})`
-    )
-  }
-  if (filters.lastContactedTo) {
-    params.push(filters.lastContactedTo)
-    where.push(
-      `(SELECT MAX(wm.created_at) FROM whatsapp_messages wm WHERE wm.lead_id = l.id) < ($${params.length}::date + INTERVAL '1 day')`
-    )
-  }
-
-  return { whereSql: where.join(' AND '), params }
-}
-
-export interface AudienceLead {
-  id: string
-  full_name: string
-  child_name: string | null
-  whatsapp_number: string
-  pipeline_stage: string
-}
+export type { BroadcastFilters, AudienceLead }
 
 // Used by the "preview" step in the broadcast composer — shows the
 // match count plus a small sample before the admin commits to sending.
+// WhatsApp broadcasts require a whatsapp_number on file.
 export async function previewAudience(
   clientId: string,
   filters: BroadcastFilters,
   sampleSize = 10
 ): Promise<{ count: number; sample: AudienceLead[] }> {
-  const { whereSql, params } = buildAudienceQuery(clientId, filters)
-
-  const [{ count }] = await query<{ count: string }>(
-    `SELECT COUNT(*)::int AS count FROM leads l WHERE ${whereSql}`,
-    params
-  )
-
-  const sample = await query<AudienceLead>(
-    `SELECT l.id, l.full_name, l.child_name, l.whatsapp_number, l.pipeline_stage
-     FROM leads l WHERE ${whereSql}
-     ORDER BY l.created_at DESC
-     LIMIT ${sampleSize}`,
-    params
-  )
-
-  return { count: Number(count), sample }
+  return previewAudienceShared(clientId, filters, 'whatsapp_number', sampleSize)
 }
 
 export interface CreateBroadcastParams {
@@ -121,7 +32,7 @@ export interface CreateBroadcastParams {
 // function just snapshots the audience and queues it up, so it stays
 // fast even for large audiences.
 export async function createBroadcast(params: CreateBroadcastParams): Promise<{ broadcastId: string; totalRecipients: number }> {
-  const { whereSql, params: audienceParams } = buildAudienceQuery(params.clientId, params.filters)
+  const { whereSql, params: audienceParams } = buildAudienceQuery(params.clientId, params.filters, 'whatsapp_number')
 
   const broadcast = (
     await query<{ id: string }>(
