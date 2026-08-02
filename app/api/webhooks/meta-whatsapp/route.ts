@@ -37,6 +37,14 @@ export async function POST(req: NextRequest) {
 
   for (const entry of payload.entry || []) {
     for (const change of entry.changes || []) {
+      // Template approval/rejection is a WABA-level event (keyed by
+      // entry.id = the WABA ID), not tied to a phone_number_id like
+      // message events are — handled separately below.
+      if (change.field === 'message_template_status_update') {
+        results.push(await handleTemplateStatusUpdate(entry.id, change.value || {}))
+        continue
+      }
+
       if (change.field !== 'messages') continue
       const value = change.value || {}
       const phoneNumberId = value.metadata?.phone_number_id
@@ -194,4 +202,58 @@ async function handleStatusUpdate(status: any) {
     return { wamid, updated: false }
   }
   return { wamid, updated: true, leadId: rows[0].lead_id }
+}
+
+// Pushes template approval/rejection into wa_templates the moment Meta
+// decides it — this is what makes the Templates table in Settings show
+// "approved" in real time instead of only after someone clicks "Check
+// availability" (app/api/templates/sync/[clientId], still kept as a
+// manual backup/backfill path in case this webhook is ever missed).
+//
+// Meta's event values are a wider set than our own status column
+// supports (APPROVED, REJECTED, PENDING, PENDING_DELETION, IN_APPEAL,
+// PAUSED, DISABLED, FLAGGED...) — wa_templates.status only has
+// pending/approved/rejected (see scripts/meta-whatsapp-migration.sql),
+// so anything other than an explicit APPROVED/REJECTED collapses to
+// 'pending' rather than widening the schema for states this app doesn't
+// otherwise act on.
+async function handleTemplateStatusUpdate(wabaId: string, value: any) {
+  const event = String(value.event || '').toUpperCase()
+  const templateName = value.message_template_name
+  const metaTemplateId = value.message_template_id ? String(value.message_template_id) : null
+
+  if (!templateName) {
+    return { wabaId, skipped: true, reason: 'missing message_template_name' }
+  }
+
+  const client = (
+    await query('SELECT id FROM clients c JOIN wa_client_config cfg ON cfg.client_id = c.id WHERE cfg.waba_id = $1', [
+      wabaId,
+    ])
+  )[0]
+  if (!client) {
+    return { wabaId, templateName, error: 'No client mapped to this WABA_id' }
+  }
+
+  let newStatus: 'pending' | 'approved' | 'rejected' = 'pending'
+  if (event === 'APPROVED') newStatus = 'approved'
+  else if (event === 'REJECTED') newStatus = 'rejected'
+
+  const rejectionReason = event === 'REJECTED' ? value.reason || null : null
+
+  const rows = await query(
+    `UPDATE wa_templates
+     SET status = $1,
+         rejection_reason = $2,
+         meta_template_id = COALESCE($3, meta_template_id),
+         approved_at = CASE WHEN $1 = 'approved' THEN now() ELSE approved_at END
+     WHERE client_id = $4 AND name = $5
+     RETURNING id`,
+    [newStatus, rejectionReason, metaTemplateId, client.id, templateName]
+  )
+
+  if (rows.length === 0) {
+    return { wabaId, templateName, updated: false, reason: 'No matching wa_templates row for this client/name' }
+  }
+  return { wabaId, templateName, updated: true, status: newStatus }
 }
