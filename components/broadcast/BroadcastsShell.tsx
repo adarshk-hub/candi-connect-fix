@@ -1,9 +1,11 @@
 'use client'
 
 import { useState } from 'react'
-import { Radio } from 'lucide-react'
+import { Radio, MessageCircle, Mail } from 'lucide-react'
 import BroadcastComposer from './BroadcastComposer'
 import BroadcastHistory from './BroadcastHistory'
+import EmailBroadcastComposer from './EmailBroadcastComposer'
+import EmailBroadcastHistory from './EmailBroadcastHistory'
 
 interface Institute {
   id: string
@@ -18,11 +20,17 @@ export default function BroadcastsShell({
   lockedToClientId: string | null
 }) {
   const [clientId, setClientId] = useState(lockedToClientId || institutes[0]?.id || '')
+  const [channel, setChannel] = useState<'whatsapp' | 'email'>('whatsapp')
   const [tab, setTab] = useState<'new' | 'history'>('new')
   const [historyRefreshKey, setHistoryRefreshKey] = useState(0)
 
   if (!clientId) {
     return <p className="text-muted">No institution to broadcast to yet.</p>
+  }
+
+  function switchChannel(next: 'whatsapp' | 'email') {
+    setChannel(next)
+    setTab('new')
   }
 
   return (
@@ -49,6 +57,25 @@ export default function BroadcastsShell({
         </div>
       )}
 
+      <div className="mb-5 flex gap-2">
+        <button
+          onClick={() => switchChannel('whatsapp')}
+          className={`flex items-center gap-2 rounded-md border px-4 py-2 text-sm font-medium ${
+            channel === 'whatsapp' ? 'border-green-500 bg-green-500/10 text-green-400' : 'border-border bg-card2 text-muted2 hover:text-fg'
+          }`}
+        >
+          <MessageCircle size={16} /> WhatsApp
+        </button>
+        <button
+          onClick={() => switchChannel('email')}
+          className={`flex items-center gap-2 rounded-md border px-4 py-2 text-sm font-medium ${
+            channel === 'email' ? 'border-blue-500 bg-blue-500/10 text-blue-400' : 'border-border bg-card2 text-muted2 hover:text-fg'
+          }`}
+        >
+          <Mail size={16} /> Email
+        </button>
+      </div>
+
       <div className="mb-5 flex gap-1 border-b border-border">
         {(['new', 'history'] as const).map((t) => (
           <button
@@ -63,8 +90,20 @@ export default function BroadcastsShell({
         ))}
       </div>
 
-      {tab === 'new' ? (
-        <BroadcastComposer
+      {channel === 'whatsapp' ? (
+        tab === 'new' ? (
+          <BroadcastComposer
+            clientId={clientId}
+            onSent={() => {
+              setTab('history')
+              setHistoryRefreshKey((k) => k + 1)
+            }}
+          />
+        ) : (
+          <BroadcastHistory clientId={clientId} refreshKey={historyRefreshKey} />
+        )
+      ) : tab === 'new' ? (
+        <EmailBroadcastComposer
           clientId={clientId}
           onSent={() => {
             setTab('history')
@@ -72,7 +111,7 @@ export default function BroadcastsShell({
           }}
         />
       ) : (
-        <BroadcastHistory clientId={clientId} refreshKey={historyRefreshKey} />
+        <EmailBroadcastHistory clientId={clientId} refreshKey={historyRefreshKey} />
       )}
     </div>
   )
