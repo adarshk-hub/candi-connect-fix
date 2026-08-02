@@ -38,6 +38,7 @@ export async function POST(req: NextRequest, { params }: { params: { clientId: s
 
   const accessToken = decrypt(config.access_token)
   const updated: any[] = []
+  const errors: any[] = []
 
   for (const tmpl of pending) {
     const proof = appSecretProof(accessToken)
@@ -46,8 +47,25 @@ export async function POST(req: NextRequest, { params }: { params: { clientId: s
       { headers: { Authorization: `Bearer ${accessToken}` } }
     )
     const data = await res.json().catch(() => ({}))
+
+    if (!res.ok) {
+      // Meta rejected the request itself (bad/expired token, wrong
+      // permissions, wrong WABA ID, etc.) — surface this instead of
+      // silently leaving the template stuck at 'pending' forever with no
+      // indication anything went wrong.
+      errors.push({ id: tmpl.id, name: tmpl.name, httpStatus: res.status, metaError: data?.error || data })
+      continue
+    }
+
     const match = data?.data?.[0]
-    if (!match) continue
+    if (!match) {
+      // Request succeeded but Meta has no template by this exact name on
+      // this WABA — usually means it was deleted/renamed directly in
+      // WhatsApp Manager, or belongs to a different WABA than the one
+      // currently configured.
+      errors.push({ id: tmpl.id, name: tmpl.name, reason: 'No template with this name found on Meta for this WABA' })
+      continue
+    }
 
     const newStatus = String(match.status || 'pending').toLowerCase()
     const rejectionReason = match.rejected_reason || null
@@ -58,8 +76,8 @@ export async function POST(req: NextRequest, { params }: { params: { clientId: s
        WHERE id = $3`,
       [newStatus, rejectionReason, tmpl.id]
     )
-    updated.push({ id: tmpl.id, name: tmpl.name, status: newStatus })
+    updated.push({ id: tmpl.id, name: tmpl.name, status: newStatus, metaStatusRaw: match.status })
   }
 
-  return NextResponse.json({ ok: true, updated })
+  return NextResponse.json({ ok: true, updated, errors })
 }
