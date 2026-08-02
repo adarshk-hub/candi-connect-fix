@@ -243,10 +243,10 @@ async function handleTemplateStatusUpdate(wabaId: string, value: any) {
 
   const rows = await query(
     `UPDATE wa_templates
-     SET status = $1,
+     SET status = $1::varchar,
          rejection_reason = $2,
          meta_template_id = COALESCE($3, meta_template_id),
-         approved_at = CASE WHEN $1 = 'approved' THEN now() ELSE approved_at END
+         approved_at = CASE WHEN $1::varchar = 'approved' THEN now() ELSE approved_at END
      WHERE client_id = $4 AND name = $5
      RETURNING id`,
     [newStatus, rejectionReason, metaTemplateId, client.id, templateName]
