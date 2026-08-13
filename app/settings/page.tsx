@@ -7,6 +7,7 @@ import { query } from '@/lib/db'
 import { AGENCY_ROLES } from '@/lib/auth'
 import WebhookCard from '@/components/settings/WebhookCard'
 import UsersPanel from '@/components/settings/panels/UsersPanel'
+import AdAccountConnector from '@/components/settings/AdAccountConnector'
 
 function getBaseUrl() {
   const h = headers()
@@ -105,14 +106,19 @@ export default async function SettingsPage() {
             </div>
             {isAgency && (
               <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-3">
-                <WebhookCard
-                  title="Ad Spend Sync"
-                  description="Ad account IDs the daily spend sync reads from. Set clients.meta_ad_account_id / clients.google_ads_customer_id to connect."
-                  rows={[
-                    { label: 'Meta Ad Account ID', value: c.meta_ad_account_id || 'not configured — set clients.meta_ad_account_id' },
-                    { label: 'Google Ads Customer ID', value: c.google_ads_customer_id || 'not configured — set clients.google_ads_customer_id' },
-                  ]}
-                />
+                <div className="rounded-card border border-border bg-card2 p-5">
+                  <h3 className="font-semibold text-fg">Ad Spend Sync</h3>
+                  <p className="mb-4 mt-1 text-sm text-muted2">
+                    Connect the ad account the daily spend sync and reporting should read from.
+                  </p>
+                  <AdAccountConnector clientId={c.id} currentAdAccountId={c.meta_ad_account_id} />
+                  <div className="mt-4 border-t border-border pt-3">
+                    <p className="mb-1 text-xs text-muted">Google Ads Customer ID</p>
+                    <code className="block truncate rounded-md border border-border bg-card px-3 py-2 text-xs text-fg">
+                      {c.google_ads_customer_id || 'not configured — set clients.google_ads_customer_id'}
+                    </code>
+                  </div>
+                </div>
                 <WebhookCard
                   title="Meta Conversions API"
                   description="Sends downstream funnel events (qualified, visit, enrolled) from this CRM back to Meta. Configure the pixel and stage mapping under Customize > Conversions API."
