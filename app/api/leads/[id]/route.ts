@@ -7,6 +7,7 @@ import { sendOperationalTemplate } from '@/lib/metaWhatsapp'
 import { sendEmail } from '@/lib/email'
 import { renderEmailTemplate, POST_VISIT_SUMMARY_KEY } from '@/lib/emailTemplates'
 import { pauseSequenceForLead, resumeSequenceForLead } from '@/lib/waSequenceEngine'
+import { fireCapiEventForLead } from '@/lib/capiTriggers'
 
 const LEAD_QUERY = `
   SELECT
@@ -121,6 +122,16 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
           session.id,
         ]
       )
+
+      // Meta Conversions API — fires whatever standard event (if any) this
+      // institute has mapped the new stage to in Settings > Customize >
+      // Conversions API. No-ops instantly if CAPI isn't configured for
+      // this client; never blocks or fails the stage update itself.
+      void fireCapiEventForLead({
+        lead: updated,
+        trigger: body.pipeline_stage,
+        eventIdSeed: `lead:${params.id}:stage:${body.pipeline_stage}`,
+      })
 
       // Auto-send a post-visit summary the moment a visit is marked done —
       // no counsellor action required.
