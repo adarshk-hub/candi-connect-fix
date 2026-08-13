@@ -19,6 +19,13 @@ export interface IntakeInput {
   externalRef?: string | null
   rawPayload?: any
   serviceInterestedIn?: string | null
+  // Ad-click match keys for Meta Conversions API — only ever supplied by
+  // the landing-page webhook (a Meta Lead Ads form submit has no browser
+  // cookie jar to read fbc/fbp from; that channel matches via lead_id
+  // instead, see lib/capiTriggers.ts).
+  fbclid?: string | null
+  fbc?: string | null
+  fbp?: string | null
 }
 
 export interface IntakeResult {
@@ -68,8 +75,9 @@ export async function findOrCreateLead(input: IntakeInput): Promise<IntakeResult
     const rows = await query(
       `INSERT INTO leads (
         client_id, campaign_id, full_name, whatsapp_number, email, grade,
-        source, entry_type, external_ref, raw_payload, service_interested_in
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+        source, entry_type, external_ref, raw_payload, service_interested_in,
+        fbclid, fbc, fbp
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
       RETURNING *`,
       [
         input.clientId,
@@ -83,6 +91,9 @@ export async function findOrCreateLead(input: IntakeInput): Promise<IntakeResult
         input.externalRef || null,
         input.rawPayload ? JSON.stringify(input.rawPayload) : null,
         input.serviceInterestedIn || null,
+        input.fbclid || null,
+        input.fbc || null,
+        input.fbp || null,
       ]
     )
     const lead = rows[0]
