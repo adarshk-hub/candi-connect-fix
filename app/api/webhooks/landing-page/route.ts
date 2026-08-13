@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { query } from '@/lib/db'
 import { findOrCreateLead } from '@/lib/leadIntake'
+import { fireCapiEventForLead } from '@/lib/capiTriggers'
 
 // Generic intake for any client website/landing-page form. Auth is a bearer
 // token equal to the client's clients.api_key (see Settings page for the
@@ -32,7 +33,27 @@ export async function POST(req: NextRequest) {
     source: 'website_contact_form',
     entryType: 'landing_page',
     rawPayload: body,
+    // Have the website's form JS read these off the page (fbclid from the
+    // URL query string, fbp/fbc from the _fbp/_fbc cookies the Meta Pixel
+    // already sets) and include them in the POST body — they're what lets
+    // a "Qualified"/"Enrolled" event sent days later via Conversions API
+    // still be attributed back to the original ad click.
+    fbclid: body.fbclid || null,
+    fbc: body.fbc || null,
+    fbp: body.fbp || null,
   })
+
+  // Only the first touch fires the Lead event — a duplicate submit from a
+  // number that's already a lead is a re-engagement, not a new conversion.
+  if (created) {
+    void fireCapiEventForLead({
+      lead,
+      trigger: 'lead_created',
+      eventIdSeed: `lead:${lead.id}`,
+      clientIpAddress: req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || null,
+      clientUserAgent: req.headers.get('user-agent'),
+    })
+  }
 
   return NextResponse.json({ ok: true, leadId: lead.id, created, duplicate })
 }
