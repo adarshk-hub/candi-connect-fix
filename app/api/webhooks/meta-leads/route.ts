@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { query } from '@/lib/db'
 import { verifySignature, fetchLeadFields } from '@/lib/metaLeadAds'
 import { findOrCreateLead, findOrCreateCampaign } from '@/lib/leadIntake'
+import { fireCapiEventForLead } from '@/lib/capiTriggers'
 
 // Meta's one-time subscription handshake: echoes hub.challenge back if
 // hub.verify_token matches what you configured in the Meta App dashboard.
@@ -72,6 +73,15 @@ export async function POST(req: NextRequest) {
         externalRef: `meta:${leadgenId}`,
         rawPayload: { formId, leadgenId, campaignId, adsetId, adId },
       })
+
+      // Sends the Lead event back to Meta via CAPI, matched on the Lead
+      // Ads lead_id itself (the strongest match key available for this
+      // channel) — mainly useful for institutes running the CAPI Gateway
+      // or wanting deduped/offline-safe attribution rather than relying on
+      // Meta's own client-side capture of the form submit.
+      if (created) {
+        void fireCapiEventForLead({ lead, trigger: 'lead_created', eventIdSeed: `lead:${lead.id}` })
+      }
 
       results.push({ leadId: lead.id, created, duplicate })
     }
