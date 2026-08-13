@@ -59,6 +59,20 @@ export const SOURCE_LABEL: Record<string, string> = {
   other: 'Other',
 }
 
+// Meta standard events this app knows how to send via Conversions API.
+// Kept here (not in lib/metaConversionsApi.ts) since this array also needs
+// to be importable from client components (Settings > Conversions API),
+// and that file pulls in server-only modules (crypto, pg) that can't be
+// bundled into the browser.
+export const META_STANDARD_EVENTS = [
+  { value: 'Lead', label: 'Lead' },
+  { value: 'Contact', label: 'Contact' },
+  { value: 'Schedule', label: 'Schedule (visit/call booked)' },
+  { value: 'SubmitApplication', label: 'Submit Application' },
+  { value: 'CompleteRegistration', label: 'Complete Registration (enrolled)' },
+  { value: 'Purchase', label: 'Purchase (fee paid)' },
+] as const
+
 export function initials(name: string): string {
   return name
     .split(' ')
