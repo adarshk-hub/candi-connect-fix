@@ -16,7 +16,8 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
   const rows = await query(
     `SELECT id, name, logo_data_url, leads_per_page,
             school_email, email_from_name, smtp_host, smtp_port, smtp_user,
-            (smtp_pass IS NOT NULL AND smtp_pass != '') AS smtp_pass_set
+            (smtp_pass IS NOT NULL AND smtp_pass != '') AS smtp_pass_set,
+            meta_ad_account_id, meta_page_id
      FROM clients WHERE id = $1`,
     [params.id]
   )
@@ -75,6 +76,14 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     values.push(body.smtpPass || null)
     setClauses.push(`smtp_pass = $${values.length}`)
   }
+  if (body.metaAdAccountId !== undefined) {
+    values.push(body.metaAdAccountId || null)
+    setClauses.push(`meta_ad_account_id = $${values.length}`)
+  }
+  if (body.metaPageId !== undefined) {
+    values.push(body.metaPageId || null)
+    setClauses.push(`meta_page_id = $${values.length}`)
+  }
   if (setClauses.length === 0) return NextResponse.json({ error: 'Nothing to update' }, { status: 400 })
 
   try {
@@ -83,7 +92,8 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
       `UPDATE clients SET ${setClauses.join(', ')} WHERE id = $${values.length}
        RETURNING id, name, logo_data_url, leads_per_page,
                  school_email, email_from_name, smtp_host, smtp_port, smtp_user,
-                 (smtp_pass IS NOT NULL AND smtp_pass != '') AS smtp_pass_set`,
+                 (smtp_pass IS NOT NULL AND smtp_pass != '') AS smtp_pass_set,
+                 meta_ad_account_id, meta_page_id`,
       values
     )
     return NextResponse.json(rows[0])
