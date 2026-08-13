@@ -1,5 +1,6 @@
 import Link from 'next/link'
 import { getClientDashboardMetrics } from '@/lib/clientDashboardMetrics'
+import { getCapiSummary } from '@/lib/capiSummary'
 import { formatLakh, formatDateTime } from '@/lib/format'
 import { Card, SectionLabel, Row, Pill } from '@/components/ui'
 import GenerateReportButton from './GenerateReportButton'
@@ -60,6 +61,7 @@ export default async function ClientDashboard({
   to?: string
 }) {
   const metrics = await getClientDashboardMetrics(clientId, from, to)
+  const capi = await getCapiSummary(clientId, from, to)
 
   const presets = [
     { label: '7d', ...presetRange(7) },
@@ -240,7 +242,7 @@ export default async function ClientDashboard({
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <Card>
           <SectionLabel>Fees collected</SectionLabel>
           <Row label="Total collected">{formatLakh(metrics.fees.totalCollected)}</Row>
@@ -253,6 +255,26 @@ export default async function ClientDashboard({
           <Row label="Last received">
             {metrics.fees.lastReceivedAt ? formatDateTime(metrics.fees.lastReceivedAt) : '—'}
           </Row>
+        </Card>
+        <Card>
+          <SectionLabel>Conversions API</SectionLabel>
+          {!capi.configured ? (
+            <>
+              <p className="text-sm text-muted2">Not connected yet.</p>
+              <Link href="/settings/customize" className="mt-2 inline-block text-sm text-blue-400 hover:underline">
+                Connect Meta Pixel →
+              </Link>
+            </>
+          ) : (
+            <>
+              <Row label="Status">
+                <Pill color={capi.enabled ? 'green' : 'gray'}>{capi.enabled ? 'Enabled' : 'Disabled'}</Pill>
+              </Row>
+              <Row label="Events sent">{capi.sent}</Row>
+              <Row label="Failed">{capi.failed}</Row>
+              <Row label="Last event">{capi.lastEventAt ? formatDateTime(capi.lastEventAt) : '—'}</Row>
+            </>
+          )}
         </Card>
         <Card>
           <SectionLabel>Client report</SectionLabel>
