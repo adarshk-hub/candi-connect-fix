@@ -31,17 +31,17 @@ export default async function SettingsPage() {
     meta_whatsapp_phone_number_id: string | null
     meta_ad_account_id: string | null
     google_ads_customer_id: string | null
+    meta_pixel_id: string | null
+    capi_enabled: boolean
   }
 
+  const CLIENT_COLUMNS =
+    'id, name, api_key, meta_page_id, meta_whatsapp_phone_number_id, meta_ad_account_id, google_ads_customer_id, meta_pixel_id, capi_enabled'
+
   const clients = isAgency
-    ? await query<ClientRow>(
-        'SELECT id, name, api_key, meta_page_id, meta_whatsapp_phone_number_id, meta_ad_account_id, google_ads_customer_id FROM clients ORDER BY name'
-      )
+    ? await query<ClientRow>(`SELECT ${CLIENT_COLUMNS} FROM clients ORDER BY name`)
     : session.clientId
-      ? await query<ClientRow>(
-          'SELECT id, name, api_key, meta_page_id, meta_whatsapp_phone_number_id, meta_ad_account_id, google_ads_customer_id FROM clients WHERE id = $1',
-          [session.clientId]
-        )
+      ? await query<ClientRow>(`SELECT ${CLIENT_COLUMNS} FROM clients WHERE id = $1`, [session.clientId])
       : []
 
   const canCustomize = isAgency || session.role === 'client_admin'
@@ -111,6 +111,14 @@ export default async function SettingsPage() {
                   rows={[
                     { label: 'Meta Ad Account ID', value: c.meta_ad_account_id || 'not configured — set clients.meta_ad_account_id' },
                     { label: 'Google Ads Customer ID', value: c.google_ads_customer_id || 'not configured — set clients.google_ads_customer_id' },
+                  ]}
+                />
+                <WebhookCard
+                  title="Meta Conversions API"
+                  description="Sends downstream funnel events (qualified, visit, enrolled) from this CRM back to Meta. Configure the pixel and stage mapping under Customize > Conversions API."
+                  rows={[
+                    { label: 'Status', value: c.capi_enabled ? 'Enabled' : 'Disabled' },
+                    { label: 'Meta Pixel / Dataset ID', value: c.meta_pixel_id || 'not configured' },
                   ]}
                 />
               </div>
