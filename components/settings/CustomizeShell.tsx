@@ -15,6 +15,7 @@ import {
   Rows3,
   Mail,
   MessageCircle,
+  Radio,
 } from 'lucide-react'
 import LeadStagesPanel from './panels/LeadStagesPanel'
 import OptionListPanel from './panels/OptionListPanel'
@@ -24,6 +25,7 @@ import LogoPanel from './panels/LogoPanel'
 import DisplayPrefsPanel from './panels/DisplayPrefsPanel'
 import EmailSettingsPanel from './panels/EmailSettingsPanel'
 import WhatsAppSettingsPanel from './panels/WhatsAppSettingsPanel'
+import ConversionsApiPanel from './panels/ConversionsApiPanel'
 
 interface Institute {
   id: string
@@ -40,6 +42,7 @@ const CATEGORIES = [
   { key: 'logo', label: 'Institute Logo', icon: ImageIcon },
   { key: 'email', label: 'School Email', icon: Mail },
   { key: 'whatsapp', label: 'WhatsApp', icon: MessageCircle },
+  { key: 'capi', label: 'Conversions API', icon: Radio },
   { key: 'display', label: 'Display Preferences', icon: Rows3 },
 ] as const
 
@@ -114,6 +117,7 @@ export default function CustomizeShell({
           {active === 'logo' && <LogoPanel clientId={clientId} />}
           {active === 'email' && <EmailSettingsPanel clientId={clientId} />}
           {active === 'whatsapp' && <WhatsAppSettingsPanel clientId={clientId} />}
+          {active === 'capi' && <ConversionsApiPanel clientId={clientId} />}
           {active === 'display' && <DisplayPrefsPanel clientId={clientId} />}
         </div>
       </div>
