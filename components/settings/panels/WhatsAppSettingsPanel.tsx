@@ -61,6 +61,16 @@ export default function WhatsAppSettingsPanel({ clientId }: { clientId: string }
   const [customBody, setCustomBody] = useState('')
   const [submittingCustom, setSubmittingCustom] = useState(false)
 
+  // Header is optional — 'none' (most templates), 'text' (a static title
+  // line, no upload needed), or a media type that requires the sample
+  // file to be uploaded to Meta first for a header_handle (see
+  // uploadHeaderMedia below) before the template itself can be submitted.
+  const [headerType, setHeaderType] = useState<'none' | 'text' | 'image' | 'video' | 'document'>('none')
+  const [headerText, setHeaderText] = useState('')
+  const [headerFile, setHeaderFile] = useState<File | null>(null)
+  const [headerHandle, setHeaderHandle] = useState<string | null>(null)
+  const [uploadingHeader, setUploadingHeader] = useState(false)
+
   // Sequence-step template assignment state: day_number -> template_name
   const [assignments, setAssignments] = useState<Record<number, string>>({})
   const [assignmentsLoading, setAssignmentsLoading] = useState(true)
@@ -246,20 +256,75 @@ export default function WhatsAppSettingsPanel({ clientId }: { clientId: string }
     }
   }
 
+  // Fires as soon as a file is picked for an image/video/document header —
+  // uploads it to Meta right away (rather than waiting for "Submit
+  // Template") so the person sees upload success/failure immediately, and
+  // the resulting handle just sits ready for the actual submit below.
+  async function uploadHeaderMedia(file: File) {
+    setHeaderFile(file)
+    setHeaderHandle(null)
+    setUploadingHeader(true)
+    setError('')
+    try {
+      const form = new FormData()
+      form.append('file', file)
+      const res = await fetch(`/api/clients/${clientId}/templates/upload-media`, {
+        method: 'POST',
+        body: form,
+      })
+      const b = await res.json().catch(() => ({}))
+      if (!res.ok || !b.ok) {
+        setError(b.error || 'Failed to upload the sample file to Meta.')
+        setHeaderFile(null)
+        return
+      }
+      setHeaderHandle(b.handle)
+    } catch (err: any) {
+      setError(err?.message || 'Network error — could not reach the server')
+      setHeaderFile(null)
+    } finally {
+      setUploadingHeader(false)
+    }
+  }
+
   // Submits a fully custom template — name, category (Marketing/Utility/
-  // Authentication), and body text with {{1}}, {{2}}... variables — via the
-  // generic POST /api/templates/submit endpoint, same one the two default
-  // buttons above call under the hood, just with user-supplied values
-  // instead of a fixed definition list.
+  // Authentication), optional header (text, or image/video/document via
+  // an already-uploaded handle), and body text with {{1}}, {{2}}...
+  // variables — via the generic POST /api/templates/submit endpoint, same
+  // one the two default buttons above call under the hood, just with
+  // user-supplied values instead of a fixed definition list.
   async function submitCustomTemplate() {
     if (!customName.trim() || !customBody.trim()) {
       setError('Template name and body are required.')
       return
     }
+    if (headerType === 'text' && !headerText.trim()) {
+      setError('Enter the header text, or set header type to None.')
+      return
+    }
+    if (headerType !== 'none' && headerType !== 'text' && !headerHandle) {
+      setError('Upload a sample file for the header before submitting.')
+      return
+    }
+
     setSubmittingCustom(true)
     setError('')
     setStatus('')
     try {
+      const components: any[] = []
+
+      if (headerType === 'text') {
+        components.push({ type: 'HEADER', format: 'TEXT', text: headerText.trim() })
+      } else if (headerType !== 'none') {
+        components.push({
+          type: 'HEADER',
+          format: headerType.toUpperCase(),
+          example: { header_handle: [headerHandle] },
+        })
+      }
+
+      components.push({ type: 'BODY', text: customBody.trim() })
+
       const res = await fetch(`/api/templates/submit`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -268,7 +333,7 @@ export default function WhatsAppSettingsPanel({ clientId }: { clientId: string }
           name: customName.trim(),
           category: customCategory,
           language: 'en',
-          components: [{ type: 'BODY', text: customBody.trim() }],
+          components,
         }),
       })
       const b = await res.json().catch(() => ({}))
@@ -279,6 +344,10 @@ export default function WhatsAppSettingsPanel({ clientId }: { clientId: string }
       setStatus(`Submitted "${customName.trim()}" (${customCategory}) to Meta for approval.`)
       setCustomName('')
       setCustomBody('')
+      setHeaderType('none')
+      setHeaderText('')
+      setHeaderFile(null)
+      setHeaderHandle(null)
       loadTemplates()
     } catch (err: any) {
       setError(err?.message || 'Network error — could not reach the server')
@@ -560,6 +629,56 @@ export default function WhatsAppSettingsPanel({ clientId }: { clientId: string }
             </div>
           </div>
           <div className="mt-3">
+            <label className="mb-1 block text-xs text-muted">Header (optional)</label>
+            <select
+              value={headerType}
+              onChange={(e) => {
+                const next = e.target.value as typeof headerType
+                setHeaderType(next)
+                setHeaderText('')
+                setHeaderFile(null)
+                setHeaderHandle(null)
+              }}
+              className="w-full rounded-md border border-border bg-card2 px-3 py-2 text-sm text-fg outline-none focus:border-blue-500"
+            >
+              <option value="none">None</option>
+              <option value="text">Text (title line)</option>
+              <option value="image">Image</option>
+              <option value="video">Video</option>
+              <option value="document">Document (PDF, etc.)</option>
+            </select>
+
+            {headerType === 'text' && (
+              <input
+                value={headerText}
+                onChange={(e) => setHeaderText(e.target.value)}
+                placeholder="e.g. Your Application Update"
+                className="mt-2 w-full rounded-md border border-border bg-card2 px-3 py-2 text-sm text-fg outline-none focus:border-blue-500"
+              />
+            )}
+
+            {(headerType === 'image' || headerType === 'video' || headerType === 'document') && (
+              <div className="mt-2">
+                <input
+                  type="file"
+                  accept={headerType === 'image' ? 'image/*' : headerType === 'video' ? 'video/*' : 'application/pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx'}
+                  onChange={(e) => {
+                    const file = e.target.files?.[0]
+                    if (file) uploadHeaderMedia(file)
+                  }}
+                  className="block w-full text-xs text-muted file:mr-3 file:rounded-md file:border file:border-border file:bg-card file:px-3 file:py-1.5 file:text-xs file:text-fg"
+                />
+                {uploadingHeader && <p className="mt-1 text-xs text-muted">Uploading sample to Meta…</p>}
+                {!uploadingHeader && headerHandle && (
+                  <p className="mt-1 text-xs text-green-400">✓ {headerFile?.name} uploaded — ready to submit.</p>
+                )}
+                <p className="mt-1 text-xs text-muted">
+                  Meta requires one real example file (not a placeholder) to approve a media-header template.
+                </p>
+              </div>
+            )}
+          </div>
+          <div className="mt-3">
             <label className="mb-1 block text-xs text-muted">Body — use {'{{1}}'}, {'{{2}}'} for variables</label>
             <textarea
               value={customBody}
@@ -571,7 +690,7 @@ export default function WhatsAppSettingsPanel({ clientId }: { clientId: string }
           </div>
           <button
             onClick={submitCustomTemplate}
-            disabled={submittingCustom || !configured}
+            disabled={submittingCustom || uploadingHeader || !configured}
             title={!configured ? 'Save WhatsApp config first' : ''}
             className="mt-3 flex items-center gap-2 rounded-md bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-500 disabled:opacity-50"
           >
