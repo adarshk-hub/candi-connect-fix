@@ -2,6 +2,13 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getSession, AGENCY_ROLES } from '@/lib/auth'
 import { backfillMetaAdSpend } from '@/lib/adSpendSync'
 
+// Backfilling many weeks across many campaigns means more Meta API pages to
+// walk through than a single-week sync — give it real headroom rather than
+// the platform's short default. (Vercel Hobby plan caps this at 60s; Pro/
+// Enterprise allow higher if this ever isn't enough for a very large
+// account.)
+export const maxDuration = 60
+
 // One-off (or occasionally re-run) catch-up for historical spend that the
 // regular weekly sync never covers — see the comment on backfillMetaAdSpend
 // for why that gap exists.
