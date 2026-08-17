@@ -8,6 +8,7 @@ export interface CampaignRow {
   visits: number
   enrolled: number
   fees: number
+  spend: number
   cpl: number | null
   convPct: number | null
   status: { label: string; color: 'green' | 'gray' | 'amber' }
@@ -226,6 +227,7 @@ export async function getClientDashboardMetrics(
       visits: Number(c.visits),
       enrolled,
       fees,
+      spend,
       cpl: ratio(spend, leads),
       convPct: leads > 0 ? (enrolled / leads) * 100 : null,
       status: { label: 'Steady', color: 'gray' },
