@@ -334,3 +334,28 @@ export async function sendVerificationPing(clientId: string, to: string): Promis
     ],
   })
 }
+
+// Turning on webhook fields (e.g. "messages") at the App level only makes
+// the app *capable* of receiving those events — it does nothing on its
+// own. A WABA has to separately subscribe to this specific app's webhook
+// via this call, or Meta never sends it anything for that WABA, even with
+// every field toggled on in the App Dashboard. This step is normally done
+// automatically by Meta's guided Embedded Signup flow, but is easy to miss
+// entirely on a direct/manual Cloud API integration like this one — with
+// no error surfaced anywhere, inbound messages just silently never arrive.
+export async function subscribeWabaToApp(wabaId: string, accessToken: string): Promise<SendResult> {
+  try {
+    const url = withAppSecretProof(`${GRAPH_API_URL}/${wabaId}/subscribed_apps`, accessToken)
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}` },
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok || data?.success === false) {
+      return { ok: false, error: data?.error?.message || `Meta API returned ${res.status}` }
+    }
+    return { ok: true }
+  } catch (err: any) {
+    return { ok: false, error: err.message || 'Request to Meta failed' }
+  }
+}
