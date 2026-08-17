@@ -8,6 +8,7 @@ import { AGENCY_ROLES } from '@/lib/auth'
 import WebhookCard from '@/components/settings/WebhookCard'
 import UsersPanel from '@/components/settings/panels/UsersPanel'
 import AdAccountConnector from '@/components/settings/AdAccountConnector'
+import PageConnector from '@/components/settings/PageConnector'
 
 function getBaseUrl() {
   const h = headers()
@@ -79,14 +80,19 @@ export default async function SettingsPage() {
           <div key={c.id} className="rounded-card border border-border bg-card p-5">
             <h3 className="mb-4 font-bold text-fg">{c.name}</h3>
             <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-              <WebhookCard
-                title="Meta Lead Ads"
-                description="Paste into your Meta App's Webhooks config (Page subscription, leadgen field)."
-                rows={[
-                  { label: 'Webhook URL', value: `${baseUrl}/api/webhooks/meta-leads` },
-                  { label: 'Facebook Page ID (routing)', value: c.meta_page_id || 'not configured — set clients.meta_page_id' },
-                ]}
-              />
+              <div className="rounded-card border border-border bg-card2 p-5">
+                <h3 className="font-semibold text-fg">Meta Lead Ads</h3>
+                <p className="mb-4 mt-1 text-sm text-muted2">
+                  Paste into your Meta App's Webhooks config (Page subscription, leadgen field).
+                </p>
+                <div className="mb-4">
+                  <p className="mb-1 text-xs text-muted">Webhook URL</p>
+                  <code className="block truncate rounded-md border border-border bg-card px-3 py-2 text-xs text-fg">
+                    {baseUrl}/api/webhooks/meta-leads
+                  </code>
+                </div>
+                <PageConnector clientId={c.id} currentPageId={c.meta_page_id} />
+              </div>
               <WebhookCard
                 title="Landing Page Form"
                 description="POST { name, phone, email?, grade? } as JSON with this bearer token from your website's form handler."
