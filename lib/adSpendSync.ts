@@ -1,6 +1,7 @@
 import { query } from './db'
 import { fetchMetaCampaignSpend, CampaignSpend } from './metaAdsSpend'
 import { fetchGoogleCampaignSpend } from './googleAdsSpend'
+import { findOrCreateCampaign } from './leadIntake'
 
 interface SyncResult {
   clientId: string
@@ -44,15 +45,27 @@ async function applySpend(
   const source = platform === 'meta' ? 'meta_api' : 'google_api'
 
   for (const row of spendRows) {
-    const campaigns = await query<{ id: string }>(
+    let campaigns = await query<{ id: string }>(
       `SELECT id FROM campaigns WHERE client_id = $1 AND platform = $2 AND platform_campaign_id = $3`,
       [clientId, platform, row.platformCampaignId]
     )
 
+    // Ad-spend sync used to only write against campaigns that already had a
+    // local row (created via the lead-intake webhook path when a lead first
+    // came in tagged with that campaign). That meant a real ad account with
+    // genuine spend but no leads yet — or leads that hadn't synced first —
+    // showed up as "unmatched" and silently produced zero rows in the UI,
+    // even on a fully successful Meta API fetch. Auto-create the campaign
+    // here too, same as leadIntake.findOrCreateCampaign does, so spend never
+    // gets thrown away just because this was the first time we'd seen it.
     if (campaigns.length === 0) {
-      result.campaignsUnmatched++
-      result.unmatchedNames.push(row.campaignName)
-      continue
+      const newId = await findOrCreateCampaign({
+        clientId,
+        platform,
+        platformCampaignId: row.platformCampaignId,
+        displayName: row.campaignName,
+      })
+      campaigns = [{ id: newId }]
     }
 
     for (const c of campaigns) {
