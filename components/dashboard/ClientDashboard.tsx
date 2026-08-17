@@ -4,6 +4,7 @@ import { getCapiSummary } from '@/lib/capiSummary'
 import { formatLakh, formatDateTime } from '@/lib/format'
 import { Card, SectionLabel, Row, Pill } from '@/components/ui'
 import GenerateReportButton from './GenerateReportButton'
+import BackfillMetaLeadsButton from './BackfillMetaLeadsButton'
 
 function isoDate(d: Date): string {
   return d.toISOString().slice(0, 10)
@@ -91,6 +92,11 @@ export default async function ClientDashboard({
           ))}
         </div>
       </div>
+
+      {/* Agency-only in practice — the API route itself enforces this via
+          AGENCY_ROLES, so a client_admin clicking it just sees "Forbidden"
+          rather than the button being hidden client-side. */}
+      <BackfillMetaLeadsButton clientId={clientId} />
 
       <form className="flex items-end gap-3 rounded-card border border-border bg-card p-4 text-sm">
         <span className="font-medium text-fg">Custom range</span>
