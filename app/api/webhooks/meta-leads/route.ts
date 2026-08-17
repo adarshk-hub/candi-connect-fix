@@ -1,4 +1,3 @@
-//Re
 import { NextRequest, NextResponse } from 'next/server'
 import { query } from '@/lib/db'
 import { verifySignature, fetchLeadFields } from '@/lib/metaLeadAds'
@@ -48,7 +47,7 @@ export async function POST(req: NextRequest) {
       const adsetId: string | undefined = value.adgroup_id
       const adId: string | undefined = value.ad_id
 
-      const fields = await fetchLeadFields(leadgenId)
+      const fields = await fetchLeadFields(leadgenId, pageId)
 
       let internalCampaignId: string | null = null
       if (campaignId) {
