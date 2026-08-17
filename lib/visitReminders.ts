@@ -112,7 +112,17 @@ export async function sendDueVisitReminders(): Promise<ReminderResult[]> {
 
   for (const row of rows) {
     const visitAt = visitDateTime(row.event_date, row.event_time).getTime()
-    const visitDateLabel = new Date(visitAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
+    // timeZone must be explicit — this collapses a full timestamp down to
+    // just a date for the reminder text, and without it, an early-morning
+    // IST visit can render as the previous day's date on a UTC-running
+    // server (e.g. 29 Jun 00:30 IST is 28 Jun 19:00 UTC) — a parent would
+    // get a reminder for the wrong day.
+    const visitDateLabel = new Date(visitAt).toLocaleDateString('en-IN', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+      timeZone: 'Asia/Kolkata',
+    })
 
     if (!row.reminder_48h_sent_at && now >= visitAt - 48 * 60 * 60 * 1000) {
       const result = await sendOperationalTemplate({
