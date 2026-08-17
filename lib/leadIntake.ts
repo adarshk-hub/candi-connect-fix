@@ -1,3 +1,4 @@
+//Re
 import { query } from './db'
 
 export function normalizePhone(raw: string): string {
@@ -26,6 +27,12 @@ export interface IntakeInput {
   fbclid?: string | null
   fbc?: string | null
   fbp?: string | null
+  // Overrides the row's created_at instead of defaulting to now() — used
+  // only by historical backfills (Meta Lead Ads retroactive pull) so a
+  // lead captured 6 weeks ago doesn't show up as "created today" on the
+  // dashboard and skew every date-range filter and campaign-week rollup.
+  // Live intake paths (webhooks, landing page) never set this.
+  createdAt?: string | null
 }
 
 export interface IntakeResult {
@@ -76,8 +83,8 @@ export async function findOrCreateLead(input: IntakeInput): Promise<IntakeResult
       `INSERT INTO leads (
         client_id, campaign_id, full_name, whatsapp_number, email, grade,
         source, entry_type, external_ref, raw_payload, service_interested_in,
-        fbclid, fbc, fbp
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+        fbclid, fbc, fbp, created_at
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,COALESCE($15::timestamp, now()))
       RETURNING *`,
       [
         input.clientId,
@@ -94,6 +101,7 @@ export async function findOrCreateLead(input: IntakeInput): Promise<IntakeResult
         input.fbclid || null,
         input.fbc || null,
         input.fbp || null,
+        input.createdAt || null,
       ]
     )
     const lead = rows[0]
