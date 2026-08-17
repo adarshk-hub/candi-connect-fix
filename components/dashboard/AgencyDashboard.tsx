@@ -1,3 +1,4 @@
+import Link from 'next/link'
 import { query } from '@/lib/db'
 import { getPrimaryClientStages } from '@/lib/stagesServer'
 import { SOURCE_LABEL } from '@/lib/types'
@@ -64,6 +65,14 @@ export default async function AgencyDashboard({
   const totalLeads = Number(all_leads) || 1
   const allStagesOrdered = await getPrimaryClientStages()
   const maxStageCount = Math.max(...allStagesOrdered.map((s) => stageCounts[s.key] || 0), 1)
+
+  const institutes = await query<{ id: string; name: string; lead_count: string }>(
+    `SELECT c.id, c.name, COUNT(l.id)::int AS lead_count
+     FROM clients c
+     LEFT JOIN leads l ON l.client_id = c.id
+     GROUP BY c.id, c.name
+     ORDER BY c.name`
+  )
 
   return (
     <div>
@@ -166,6 +175,26 @@ export default async function AgencyDashboard({
               )
             })}
           </div>
+        </div>
+      </div>
+
+      <div className="mt-8 rounded-card border border-border bg-card p-6">
+        <h2 className="mb-1 text-lg font-semibold text-fg">Institutes</h2>
+        <p className="mb-4 text-sm text-muted2">
+          Open an institute's own dashboard to see its funnel, cost metrics, ad spend, and campaign breakdown.
+        </p>
+        <div className="divide-y divide-border">
+          {institutes.map((c) => (
+            <Link
+              key={c.id}
+              href={`/dashboard/${c.id}`}
+              className="flex items-center justify-between py-3 text-sm text-fg hover:text-blue-400"
+            >
+              <span className="font-medium">{c.name}</span>
+              <span className="text-muted2">{c.lead_count} leads →</span>
+            </Link>
+          ))}
+          {institutes.length === 0 && <p className="py-3 text-sm text-muted">No institutes yet.</p>}
         </div>
       </div>
     </div>
