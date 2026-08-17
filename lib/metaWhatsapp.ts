@@ -359,3 +359,58 @@ export async function subscribeWabaToApp(wabaId: string, accessToken: string): P
     return { ok: false, error: err.message || 'Request to Meta failed' }
   }
 }
+
+export interface MediaUploadResult {
+  ok: boolean
+  handle?: string
+  error?: string
+}
+
+// A template with an IMAGE/VIDEO/DOCUMENT header can't just reference a
+// URL — Meta requires one real example file to be uploaded up front via
+// the (separate, two-step) Resumable Upload API, and the opaque "handle"
+// it returns is what actually goes into the template's
+// components[].example.header_handle when submitting for approval.
+// Docs: https://developers.facebook.com/docs/graph-api/guides/upload
+export async function uploadTemplateMediaForHandle(params: {
+  accessToken: string
+  fileBuffer: Buffer
+  mimeType: string
+  fileName: string
+}): Promise<MediaUploadResult> {
+  const appId = process.env.META_APP_ID
+  if (!appId) {
+    return { ok: false, error: 'META_APP_ID is not configured on the server.' }
+  }
+
+  try {
+    // Step 1: start an upload session sized for this exact file.
+    const sessionUrl = `${GRAPH_API_URL}/${appId}/uploads?file_length=${params.fileBuffer.byteLength}&file_type=${encodeURIComponent(params.mimeType)}&file_name=${encodeURIComponent(params.fileName)}&access_token=${encodeURIComponent(params.accessToken)}`
+    const sessionRes = await fetch(sessionUrl, { method: 'POST' })
+    const sessionData = await sessionRes.json().catch(() => ({}))
+    if (!sessionRes.ok || !sessionData?.id) {
+      return { ok: false, error: sessionData?.error?.message || `Could not start upload session (${sessionRes.status})` }
+    }
+
+    // Step 2: push the actual bytes to that session in one shot (files
+    // this app deals with — template sample images/videos/PDFs — are
+    // small enough not to need chunking). sessionData.id already comes
+    // back as "upload:<session-id>" and is used as the path verbatim.
+    const uploadRes = await fetch(`${GRAPH_API_URL}/${sessionData.id}`, {
+      method: 'POST',
+      headers: {
+        Authorization: `OAuth ${params.accessToken}`,
+        file_offset: '0',
+      },
+      body: new Uint8Array(params.fileBuffer),
+    })
+    const uploadData = await uploadRes.json().catch(() => ({}))
+    if (!uploadRes.ok || !uploadData?.h) {
+      return { ok: false, error: uploadData?.error?.message || `Upload failed (${uploadRes.status})` }
+    }
+
+    return { ok: true, handle: uploadData.h }
+  } catch (err: any) {
+    return { ok: false, error: err.message || 'Request to Meta failed' }
+  }
+}
