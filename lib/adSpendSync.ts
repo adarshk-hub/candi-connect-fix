@@ -1,5 +1,5 @@
 import { query } from './db'
-import { fetchMetaCampaignSpend, CampaignSpend } from './metaAdsSpend'
+import { fetchMetaCampaignSpend, fetchMetaCampaignSpendRange, CampaignSpend } from './metaAdsSpend'
 import { fetchGoogleCampaignSpend } from './googleAdsSpend'
 import { findOrCreateCampaign } from './leadIntake'
 
@@ -107,6 +107,44 @@ export async function syncAdSpend(forDate: Date = new Date()): Promise<SyncResul
     if (client.google_ads_customer_id) {
       const spend = await fetchGoogleCampaignSpend({ customerId: client.google_ads_customer_id, since, until })
       results.push(await applySpend(client.id, 'google', weekStarting, spend))
+    }
+  }
+
+  return results
+}
+
+// Backfills historical spend for every client with a connected Meta ad
+// account, covering the `weeksBack` weeks up to and including the current
+// one. syncAdSpend() only ever looks at "this week," so an account that's
+// been running (or paused) for months has months of real spend sitting in
+// Meta that the regular sync has never once asked for — this is the
+// one-time (or occasionally re-run) catch-up for that. Google Ads backfill
+// isn't implemented here since fetchGoogleCampaignSpend doesn't yet support
+// a ranged/bucketed query the way the Meta Insights endpoint does.
+export async function backfillMetaAdSpend(weeksBack: number, forDate: Date = new Date()): Promise<SyncResult[]> {
+  const currentWeekMonday = mondayOf(forDate)
+  const since = addDays(currentWeekMonday, -7 * (weeksBack - 1))
+  const until = addDays(currentWeekMonday, 6)
+
+  const clients = await query<{ id: string; meta_ad_account_id: string | null }>(
+    `SELECT id, meta_ad_account_id FROM clients WHERE meta_ad_account_id IS NOT NULL`
+  )
+
+  const results: SyncResult[] = []
+
+  for (const client of clients) {
+    if (!client.meta_ad_account_id) continue
+    const weeklyRows = await fetchMetaCampaignSpendRange({ adAccountId: client.meta_ad_account_id, since, until })
+
+    const byWeek = new Map<string, CampaignSpend[]>()
+    for (const row of weeklyRows) {
+      const list = byWeek.get(row.weekStarting) || []
+      list.push({ platformCampaignId: row.platformCampaignId, campaignName: row.campaignName, spend: row.spend })
+      byWeek.set(row.weekStarting, list)
+    }
+
+    for (const [weekStarting, rows] of byWeek) {
+      results.push(await applySpend(client.id, 'meta', weekStarting, rows))
     }
   }
 
