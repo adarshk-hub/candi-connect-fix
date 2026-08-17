@@ -30,6 +30,7 @@ interface ClientDashboardMetrics {
     visits: number
     enrolled: number
     fees: number
+    spend: number
     cpl: number | null
     convPct: number | null
   }[]
@@ -91,13 +92,14 @@ export default function GenerateReportButton({
 
       autoTable(doc, {
         startY: 35 + kpiLines.length * 5 + 6,
-        head: [['Campaign', 'Source', 'Leads', 'Visits', 'Enrolled', 'Fees', 'CPL', 'Conv %']],
+        head: [['Campaign', 'Source', 'Leads', 'Visits', 'Enrolled', 'Spend', 'Fees', 'CPL', 'Conv %']],
         body: metrics.campaigns.map((c) => [
           c.displayName,
           c.platform === 'google' ? 'Google' : 'Meta',
           c.leads,
           c.visits,
           c.enrolled,
+          money(c.spend),
           money(c.fees),
           money(c.cpl),
           c.convPct !== null ? `${c.convPct.toFixed(1)}%` : '—',
