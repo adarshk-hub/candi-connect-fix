@@ -1,4 +1,5 @@
 const GRAPH_API_URL = 'https://graph.facebook.com/v19.0'
+import { fetchPageAccessToken } from './metaPages'
 
 export interface HistoricalMetaLead {
   leadgenId: string
@@ -35,10 +36,10 @@ function fieldValue(fieldData: any[], name: string): string | null {
 // asset-assignment step already done for the ad account, just on the Page
 // instead.
 export async function fetchHistoricalMetaLeads(pageId: string): Promise<HistoricalMetaLead[]> {
-  const token = process.env.META_PAGE_ACCESS_TOKEN
-  if (!token) {
-    throw new Error('META_PAGE_ACCESS_TOKEN is not set on the server.')
-  }
+  // (#190) "This method must be called with a Page Access Token" — the raw
+  // System User token isn't accepted here even with full permissions; see
+  // fetchPageAccessToken's comment in metaPages.ts for why.
+  const token = await fetchPageAccessToken(pageId)
 
   const forms: { id: string; name: string }[] = []
   let formsUrl: string | null = `${GRAPH_API_URL}/${pageId}/leadgen_forms?fields=id,name&limit=100&access_token=${token}`
