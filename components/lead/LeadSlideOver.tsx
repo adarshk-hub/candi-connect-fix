@@ -138,8 +138,9 @@ export default function LeadSlideOver({ leadId, onClose }: { leadId: string; onC
             <div className="flex-1 p-6">
               {tab === 'info' && <InfoTab lead={lead} onUpdated={load} />}
               {tab === 'whatsapp' && (
-                <WhatsAppTab
+               <WhatsAppTab
                   leadId={lead.id}
+                  leadName={lead.full_name}
                   nurtureDay={lead.nurture_day}
                   nurturePaused={lead.nurture_paused}
                   onLeadChanged={load}
