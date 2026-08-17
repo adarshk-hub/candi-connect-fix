@@ -6,6 +6,7 @@ import { assertLeadAccess } from '@/lib/leadAccess'
 import { sendTextMessage } from '@/lib/metaWhatsapp'
 import { pauseSequenceForLead } from '@/lib/waSequenceEngine'
 import { handleWriteError } from '@/lib/apiError'
+import { getConversationWindow } from '@/lib/waWindow'
 
 export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
   const access = await assertLeadAccess(getSession(req), params.id)
@@ -44,6 +45,23 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   const { body: messageBody } = await req.json()
   if (!messageBody || !messageBody.trim()) {
     return NextResponse.json({ error: 'body required' }, { status: 400 })
+  }
+
+  // Meta rejects free-form text outside the 24hr customer service window —
+  // check this ourselves first so the counsellor gets an immediate, clear
+  // reason instead of a raw Meta error after we've already inserted the row
+  // and debited the wallet (see lib/waWindow.ts).
+  const windowState = await getConversationWindow(params.id)
+  if (!windowState.open) {
+    return NextResponse.json(
+      {
+        error:
+          'The 24-hour reply window is closed — this lead hasn\u2019t messaged in the last 24 hours. Send an approved template to restart the conversation.',
+        code: 'WINDOW_CLOSED',
+        lastInboundAt: windowState.lastInboundAt,
+      },
+      { status: 409 }
+    )
   }
 
   const urlMatch = messageBody.match(URL_PATTERN)
