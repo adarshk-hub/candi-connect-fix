@@ -1,4 +1,5 @@
 import crypto from 'crypto'
+import { fetchPageAccessToken } from './metaPages'
 
 const GRAPH_API_URL = 'https://graph.facebook.com/v19.0'
 
@@ -26,11 +27,14 @@ export interface MetaLeadFields {
 // Fetches the actual submitted field values for a leadgen_id from the Graph
 // API. Meta's webhook payload only tells you a lead *exists* (its ID); the
 // field data (name/phone/email) requires this separate authenticated call.
-// Until META_PAGE_ACCESS_TOKEN is set, returns stub data so the rest of the
-// pipeline (dedup, campaign auto-tag, lead creation) is fully exercisable.
-export async function fetchLeadFields(leadgenId: string): Promise<MetaLeadFields> {
-  const token = process.env.META_PAGE_ACCESS_TOKEN
-  if (!token) {
+// Requires the Page's own Page Access Token, not a raw System User token —
+// see fetchPageAccessToken's comment in metaPages.ts; this exchanges it via
+// pageId before the actual lead-field lookup, same fix as the historical
+// backfill needed. Until META_PAGE_ACCESS_TOKEN is set, returns stub data so
+// the rest of the pipeline (dedup, campaign auto-tag, lead creation) is
+// fully exercisable.
+export async function fetchLeadFields(leadgenId: string, pageId: string): Promise<MetaLeadFields> {
+  if (!process.env.META_PAGE_ACCESS_TOKEN) {
     console.log(`[meta:stub] would fetch field_data for leadgen_id ${leadgenId} from Graph API`)
     return {
       fullName: `Meta Lead ${leadgenId.slice(-6)}`,
@@ -40,6 +44,7 @@ export async function fetchLeadFields(leadgenId: string): Promise<MetaLeadFields
     }
   }
 
+  const token = await fetchPageAccessToken(pageId)
   const res = await fetch(`${GRAPH_API_URL}/${leadgenId}?access_token=${token}`)
   if (!res.ok) {
     throw new Error(`Graph API returned ${res.status}: ${await res.text()}`)
