@@ -210,6 +210,7 @@ export default async function ClientDashboard({
                 <th className="px-4 py-3">Leads</th>
                 <th className="px-4 py-3">Visits</th>
                 <th className="px-4 py-3">Enrolled</th>
+                <th className="px-4 py-3">Spend</th>
                 <th className="px-4 py-3">Fees</th>
                 <th className="px-4 py-3">CPL</th>
                 <th className="px-4 py-3">Conv %</th>
@@ -228,6 +229,7 @@ export default async function ClientDashboard({
                   <td className="px-4 py-3 text-fg">{c.leads}</td>
                   <td className="px-4 py-3 text-fg">{c.visits}</td>
                   <td className="px-4 py-3 text-fg">{c.enrolled}</td>
+                  <td className="px-4 py-3 text-fg">{formatLakh(c.spend)}</td>
                   <td className="px-4 py-3 text-fg">{formatLakh(c.fees)}</td>
                   <td className="px-4 py-3 text-fg">{fmtMoney(c.cpl)}</td>
                   <td className="px-4 py-3 text-fg">{c.convPct !== null ? `${c.convPct.toFixed(1)}%` : '—'}</td>
@@ -238,7 +240,7 @@ export default async function ClientDashboard({
               ))}
               {metrics.campaigns.length === 0 && (
                 <tr>
-                  <td colSpan={9} className="px-4 py-8 text-center text-muted">
+                  <td colSpan={10} className="px-4 py-8 text-center text-muted">
                     No active campaigns.
                   </td>
                 </tr>
