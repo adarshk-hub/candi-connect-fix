@@ -35,49 +35,88 @@ function addDays(dateStr: string, days: number): string {
 // is written against every internal row that shares that platform_campaign_id.
 // This is a known simplification: if Meta ever reports adset- or ad-level
 // spend instead of campaign-level, this will need to match on those IDs too.
-async function applySpend(
+//
+// Bulk version: does one lookup query for every distinct campaign in this
+// batch (not one query per row), then one chunked multi-row upsert instead
+// of an individual INSERT per (campaign, week). The original per-row-await
+// version was fine for syncAdSpend's single-week volume, but fell over
+// during backfillMetaAdSpend — up to 52 weeks times 100+ campaigns is
+// thousands of sequential round trips, comfortably past any serverless
+// function's time limit, and failed with an opaque timeout rather than a
+// real error.
+async function applySpendBulk(
   clientId: string,
   platform: 'meta' | 'google',
-  weekStarting: string,
-  spendRows: CampaignSpend[]
+  // Every (weekStarting, spend row) pair to write in this call — callers
+  // pass everything they have in one go rather than looping week by week.
+  entries: { weekStarting: string; row: CampaignSpend }[]
 ): Promise<SyncResult> {
   const result: SyncResult = { clientId, platform, campaignsMatched: 0, campaignsUnmatched: 0, unmatchedNames: [] }
+  if (entries.length === 0) return result
   const source = platform === 'meta' ? 'meta_api' : 'google_api'
 
-  for (const row of spendRows) {
-    let campaigns = await query<{ id: string }>(
-      `SELECT id FROM campaigns WHERE client_id = $1 AND platform = $2 AND platform_campaign_id = $3`,
-      [clientId, platform, row.platformCampaignId]
-    )
+  const distinctPlatformIds = Array.from(new Set(entries.map((e) => e.row.platformCampaignId)))
+  const existing = await query<{ id: string; platform_campaign_id: string }>(
+    `SELECT id, platform_campaign_id FROM campaigns
+     WHERE client_id = $1 AND platform = $2 AND platform_campaign_id = ANY($3::text[])`,
+    [clientId, platform, distinctPlatformIds]
+  )
 
-    // Ad-spend sync used to only write against campaigns that already had a
-    // local row (created via the lead-intake webhook path when a lead first
-    // came in tagged with that campaign). That meant a real ad account with
-    // genuine spend but no leads yet — or leads that hadn't synced first —
-    // showed up as "unmatched" and silently produced zero rows in the UI,
-    // even on a fully successful Meta API fetch. Auto-create the campaign
-    // here too, same as leadIntake.findOrCreateCampaign does, so spend never
-    // gets thrown away just because this was the first time we'd seen it.
-    if (campaigns.length === 0) {
-      const newId = await findOrCreateCampaign({
-        clientId,
-        platform,
-        platformCampaignId: row.platformCampaignId,
-        displayName: row.campaignName,
-      })
-      campaigns = [{ id: newId }]
-    }
+  const idsByPlatformId = new Map<string, string[]>()
+  for (const row of existing) {
+    const list = idsByPlatformId.get(row.platform_campaign_id) || []
+    list.push(row.id)
+    idsByPlatformId.set(row.platform_campaign_id, list)
+  }
 
-    for (const c of campaigns) {
-      await query(
-        `INSERT INTO ad_spend_weekly (campaign_id, week_starting, spend_amount, source, synced_at)
-         VALUES ($1, $2, $3, $4, now())
-         ON CONFLICT (campaign_id, week_starting)
-         DO UPDATE SET spend_amount = EXCLUDED.spend_amount, source = EXCLUDED.source, synced_at = now()`,
-        [c.id, weekStarting, row.spend, source]
-      )
+  // Auto-create whatever's still missing — bounded by the number of
+  // distinct campaigns (dozens to low hundreds), not the number of
+  // (campaign, week) rows, so this loop staying sequential is fine.
+  const nameByPlatformId = new Map(entries.map((e) => [e.row.platformCampaignId, e.row.campaignName]))
+  for (const platformId of distinctPlatformIds) {
+    if (idsByPlatformId.has(platformId)) continue
+    const newId = await findOrCreateCampaign({
+      clientId,
+      platform,
+      platformCampaignId: platformId,
+      displayName: nameByPlatformId.get(platformId) || platformId,
+    })
+    idsByPlatformId.set(platformId, [newId])
+  }
+
+  const campaignIds: string[] = []
+  const weekStartings: string[] = []
+  const spendAmounts: number[] = []
+  for (const { weekStarting, row } of entries) {
+    for (const internalId of idsByPlatformId.get(row.platformCampaignId) || []) {
+      campaignIds.push(internalId)
+      weekStartings.push(weekStarting)
+      spendAmounts.push(row.spend)
       result.campaignsMatched++
     }
+  }
+
+  // Chunked multi-row upsert via UNNEST — one round trip per chunk instead
+  // of one per row. 2000 rows/chunk keeps well under typical parameter/
+  // payload limits while still cutting a ~6,000-row backfill down to a
+  // handful of queries instead of ~6,000.
+  const CHUNK = 2000
+  for (let i = 0; i < campaignIds.length; i += CHUNK) {
+    const idsSlice = campaignIds.slice(i, i + CHUNK)
+    await query(
+      `INSERT INTO ad_spend_weekly (campaign_id, week_starting, spend_amount, source, synced_at)
+       SELECT campaign_id, week_starting, spend_amount, source, now()
+       FROM UNNEST($1::uuid[], $2::date[], $3::numeric[], $4::text[])
+       AS t(campaign_id, week_starting, spend_amount, source)
+       ON CONFLICT (campaign_id, week_starting)
+       DO UPDATE SET spend_amount = EXCLUDED.spend_amount, source = EXCLUDED.source, synced_at = now()`,
+      [
+        idsSlice,
+        weekStartings.slice(i, i + CHUNK),
+        spendAmounts.slice(i, i + CHUNK),
+        idsSlice.map(() => source),
+      ]
+    )
   }
 
   return result
@@ -102,11 +141,11 @@ export async function syncAdSpend(forDate: Date = new Date()): Promise<SyncResul
   for (const client of clients) {
     if (client.meta_ad_account_id) {
       const spend = await fetchMetaCampaignSpend({ adAccountId: client.meta_ad_account_id, since, until })
-      results.push(await applySpend(client.id, 'meta', weekStarting, spend))
+      results.push(await applySpendBulk(client.id, 'meta', spend.map((row) => ({ weekStarting, row }))))
     }
     if (client.google_ads_customer_id) {
       const spend = await fetchGoogleCampaignSpend({ customerId: client.google_ads_customer_id, since, until })
-      results.push(await applySpend(client.id, 'google', weekStarting, spend))
+      results.push(await applySpendBulk(client.id, 'google', spend.map((row) => ({ weekStarting, row }))))
     }
   }
 
@@ -136,16 +175,12 @@ export async function backfillMetaAdSpend(weeksBack: number, forDate: Date = new
     if (!client.meta_ad_account_id) continue
     const weeklyRows = await fetchMetaCampaignSpendRange({ adAccountId: client.meta_ad_account_id, since, until })
 
-    const byWeek = new Map<string, CampaignSpend[]>()
-    for (const row of weeklyRows) {
-      const list = byWeek.get(row.weekStarting) || []
-      list.push({ platformCampaignId: row.platformCampaignId, campaignName: row.campaignName, spend: row.spend })
-      byWeek.set(row.weekStarting, list)
-    }
+    const entries = weeklyRows.map((row) => ({
+      weekStarting: row.weekStarting,
+      row: { platformCampaignId: row.platformCampaignId, campaignName: row.campaignName, spend: row.spend },
+    }))
 
-    for (const [weekStarting, rows] of byWeek) {
-      results.push(await applySpend(client.id, 'meta', weekStarting, rows))
-    }
+    results.push(await applySpendBulk(client.id, 'meta', entries))
   }
 
   return results
