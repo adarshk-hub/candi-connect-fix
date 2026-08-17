@@ -57,6 +57,9 @@ export default function SpendEntryPage() {
   const [entriesLoading, setEntriesLoading] = useState(true)
   const [syncing, setSyncing] = useState(false)
   const [syncMsg, setSyncMsg] = useState('')
+  const [backfillWeeks, setBackfillWeeks] = useState(12)
+  const [backfilling, setBackfilling] = useState(false)
+  const [backfillMsg, setBackfillMsg] = useState('')
 
   function loadEntries() {
     setEntriesLoading(true)
@@ -126,6 +129,30 @@ export default function SpendEntryPage() {
     }
   }
 
+  async function backfill() {
+    setBackfilling(true)
+    setBackfillMsg('')
+    try {
+      const res = await fetch('/api/spend/backfill', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ weeks: backfillWeeks }),
+      })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setBackfillMsg(body.error || 'Backfill failed')
+        return
+      }
+      const matched = (body.results || []).reduce((sum: number, r: any) => sum + r.campaignsMatched, 0)
+      setBackfillMsg(matched > 0 ? `Backfilled ${matched} campaign-weeks across ${backfillWeeks} weeks.` : 'Backfill ran — no spend found in that range.')
+      loadEntries()
+    } catch (err: any) {
+      setBackfillMsg(err?.message || 'Network error — could not reach the server')
+    } finally {
+      setBackfilling(false)
+    }
+  }
+
   return (
     <div className="mx-auto max-w-2xl">
       <div className="mb-6 flex items-center justify-between">
@@ -140,6 +167,34 @@ export default function SpendEntryPage() {
         </button>
       </div>
       {syncMsg && <p className="mb-4 text-sm text-muted2">{syncMsg}</p>}
+
+      <div className="mb-6 rounded-card border border-border bg-card2 p-4">
+        <p className="mb-1 text-sm font-medium text-fg">Backfill historical spend</p>
+        <p className="mb-3 text-xs text-muted2">
+          "Sync Now" only pulls the current week. Use this once to pull in past weeks Meta already has spend data
+          for — safe to re-run any time, it just overwrites the same weeks with the latest numbers.
+        </p>
+        <div className="flex items-center gap-2">
+          <input
+            type="number"
+            min={1}
+            max={104}
+            value={backfillWeeks}
+            onChange={(e) => setBackfillWeeks(Number(e.target.value) || 1)}
+            className="w-20 rounded-md border border-border bg-card px-2 py-1.5 text-sm text-fg outline-none focus:border-blue-500"
+          />
+          <span className="text-sm text-muted2">weeks back</span>
+          <button
+            onClick={backfill}
+            disabled={backfilling}
+            className="ml-auto flex items-center gap-2 rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-500 disabled:opacity-50"
+          >
+            <RefreshCw size={13} className={backfilling ? 'animate-spin' : ''} />
+            {backfilling ? 'Backfilling…' : 'Backfill'}
+          </button>
+        </div>
+        {backfillMsg && <p className="mt-2 text-xs text-muted2">{backfillMsg}</p>}
+      </div>
 
       <div className="rounded-card border border-border bg-card p-6">
         <form onSubmit={onSubmit} className="space-y-4">
