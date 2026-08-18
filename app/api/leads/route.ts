@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { waitUntil } from '@vercel/functions'
 import { query } from '@/lib/db'
 import { getSession, AGENCY_ROLES } from '@/lib/auth'
 import { handleWriteError } from '@/lib/apiError'
@@ -139,16 +140,20 @@ export async function POST(req: NextRequest) {
     // Fires the Day 0 welcome template (e.g. hello_candid) immediately —
     // this is a brand-new lead the counsellor just entered by hand, so it
     // should feel like the same "first touch" as a lead arriving from an
-    // ad or landing page. Deliberately NOT awaited: this makes real
-    // network calls to Meta (send Day 0, then upload + send Day 2), which
-    // can take several seconds — the person filling out the form should
-    // see it save instantly, not wait on WhatsApp delivery. Same
-    // fire-and-forget pattern as the webhook intake routes.
-    startSequence(lead.id)
-      .then((r) => {
-        if (!r.ok) console.error(`[leads] Could not start welcome sequence for lead ${lead.id}: ${r.error}`)
-      })
-      .catch((err) => console.error(`[leads] startSequence threw for lead ${lead.id}`, err))
+    // ad or landing page. NOT awaited directly (that made the form take
+    // 10-30s, waiting on live Meta network calls) — but a bare unawaited
+    // promise doesn't work either: Vercel can freeze/kill this function
+    // the instant the response below is sent, silently cutting the send
+    // off mid-flight. waitUntil() is the platform-supported way to keep
+    // the function alive for this promise without making the response
+    // wait for it.
+    waitUntil(
+      startSequence(lead.id)
+        .then((r) => {
+          if (!r.ok) console.error(`[leads] Could not start welcome sequence for lead ${lead.id}: ${r.error}`)
+        })
+        .catch((err) => console.error(`[leads] startSequence threw for lead ${lead.id}`, err))
+    )
 
     return NextResponse.json(lead)
   } catch (err: any) {
