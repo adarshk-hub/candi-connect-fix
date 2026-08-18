@@ -148,6 +148,29 @@ async function getTemplateMeta(clientId: string, templateName: string): Promise<
   }
 }
 
+// A template's approved BODY text may have zero, one, or several {{n}}
+// variables — Meta rejects the send outright (#132000) if the number of
+// body parameters supplied doesn't exactly match what was approved, in
+// either direction. Callers that build a components array by assumption
+// (e.g. "every template has exactly one name variable") break the moment
+// a template happens to have a fully static body, which is common for
+// simple welcome/notice templates. This counts the real variables from
+// the same components JSONB used at submission time, so callers can build
+// the right number of parameters — or send none at all — instead of
+// guessing.
+export async function getTemplateBodyVariableCount(clientId: string, templateName: string): Promise<number> {
+  const row = (
+    await query<{ components: any }>('SELECT components FROM wa_templates WHERE client_id = $1 AND name = $2 LIMIT 1', [
+      clientId,
+      templateName,
+    ])
+  )[0]
+  const components = Array.isArray(row?.components) ? row.components : []
+  const bodyComponent = components.find((c: any) => String(c?.type).toUpperCase() === 'BODY')
+  const bodyText: string = bodyComponent?.text || ''
+  return new Set(Array.from(bodyText.matchAll(/\{\{\s*(\d+)\s*\}\}/g)).map((m) => m[1])).size
+}
+
 // Sends an approved template message — used for nurture sequence sends and
 // any first-touch/outside-24hr-window message, since templates are the
 // only message type Meta allows outside an open session. This covers
@@ -274,7 +297,7 @@ export async function submitTemplateToMeta(params: {
         status: (data.status ? String(data.status).toLowerCase() : 'pending') as TemplateSubmitResult['status'],
       }
     }
-        return {
+    return {
       ok: false,
       status: 'rejected',
       // Meta's top-level error.message is often a generic category label
