@@ -69,6 +69,7 @@ export default function WhatsAppSettingsPanel({ clientId }: { clientId: string }
   const [headerText, setHeaderText] = useState('')
   const [headerFile, setHeaderFile] = useState<File | null>(null)
   const [headerHandle, setHeaderHandle] = useState<string | null>(null)
+  const [headerMediaData, setHeaderMediaData] = useState<string | null>(null)
   const [uploadingHeader, setUploadingHeader] = useState(false)
 
   // Sequence-step template assignment state: day_number -> template_name
@@ -256,31 +257,45 @@ export default function WhatsAppSettingsPanel({ clientId }: { clientId: string }
     }
   }
 
-  // Fires as soon as a file is picked for an image/video/document header —
-  // uploads it to Meta right away (rather than waiting for "Submit
-  // Template") so the person sees upload success/failure immediately, and
-  // the resulting handle just sits ready for the actual submit below.
+  // Fires as soon as a file is picked for an image/video/document header.
+  // Does two things in parallel: (1) uploads to Meta's Resumable Upload
+  // API right away for the one-time approval-submission handle, so the
+  // person sees upload success/failure immediately, and (2) reads the
+  // same file as base64 to hold in state — that copy is what actually
+  // gets persisted with the template and re-uploaded to Meta fresh on
+  // every real send later (see lib/metaWhatsapp.ts sendTemplateMessage).
   async function uploadHeaderMedia(file: File) {
     setHeaderFile(file)
     setHeaderHandle(null)
+    setHeaderMediaData(null)
     setUploadingHeader(true)
     setError('')
     try {
-      const form = new FormData()
-      form.append('file', file)
-      const res = await fetch(`/api/clients/${clientId}/templates/upload-media`, {
-        method: 'POST',
-        body: form,
-      })
-      const b = await res.json().catch(() => ({}))
-      if (!res.ok || !b.ok) {
-        setError(b.error || 'Failed to upload the sample file to Meta.')
-        setHeaderFile(null)
-        return
-      }
-      setHeaderHandle(b.handle)
+      const [uploadResult, base64] = await Promise.all([
+        (async () => {
+          const form = new FormData()
+          form.append('file', file)
+          const res = await fetch(`/api/clients/${clientId}/templates/upload-media`, { method: 'POST', body: form })
+          const b = await res.json().catch(() => ({}))
+          if (!res.ok || !b.ok) throw new Error(b.error || 'Failed to upload the sample file to Meta.')
+          return b.handle as string
+        })(),
+        new Promise<string>((resolve, reject) => {
+          const reader = new FileReader()
+          reader.onload = () => {
+            const result = reader.result as string
+            // Strip the "data:<mime>;base64," prefix — only the raw
+            // base64 payload is stored, mime/filename are kept separately.
+            resolve(result.split(',')[1] || '')
+          }
+          reader.onerror = () => reject(new Error('Could not read the selected file.'))
+          reader.readAsDataURL(file)
+        }),
+      ])
+      setHeaderHandle(uploadResult)
+      setHeaderMediaData(base64)
     } catch (err: any) {
-      setError(err?.message || 'Network error — could not reach the server')
+      setError(err?.message || 'Failed to process the selected file.')
       setHeaderFile(null)
     } finally {
       setUploadingHeader(false)
@@ -302,7 +317,7 @@ export default function WhatsAppSettingsPanel({ clientId }: { clientId: string }
       setError('Enter the header text, or set header type to None.')
       return
     }
-    if (headerType !== 'none' && headerType !== 'text' && !headerHandle) {
+    if (headerType !== 'none' && headerType !== 'text' && (!headerHandle || !headerMediaData)) {
       setError('Upload a sample file for the header before submitting.')
       return
     }
@@ -334,6 +349,11 @@ export default function WhatsAppSettingsPanel({ clientId }: { clientId: string }
           category: customCategory,
           language: 'en',
           components,
+          headerFormat: headerType === 'none' ? null : headerType.toUpperCase(),
+          headerText: headerType === 'text' ? headerText.trim() : null,
+          headerMediaData: headerType !== 'none' && headerType !== 'text' ? headerMediaData : null,
+          headerMediaMime: headerFile?.type || null,
+          headerMediaFilename: headerFile?.name || null,
         }),
       })
       const b = await res.json().catch(() => ({}))
@@ -348,6 +368,7 @@ export default function WhatsAppSettingsPanel({ clientId }: { clientId: string }
       setHeaderText('')
       setHeaderFile(null)
       setHeaderHandle(null)
+      setHeaderMediaData(null)
       loadTemplates()
     } catch (err: any) {
       setError(err?.message || 'Network error — could not reach the server')
@@ -638,6 +659,7 @@ export default function WhatsAppSettingsPanel({ clientId }: { clientId: string }
                 setHeaderText('')
                 setHeaderFile(null)
                 setHeaderHandle(null)
+                setHeaderMediaData(null)
               }}
               className="w-full rounded-md border border-border bg-card2 px-3 py-2 text-sm text-fg outline-none focus:border-blue-500"
             >
