@@ -113,19 +113,39 @@ export async function sendTextMessage(params: {
   return result
 }
 
-// Looks up the category (marketing/utility/authentication) a template
-// was submitted under, since sendTemplateMessage's caller only ever
-// passes the template name — needed to pick the right WCC rate. Falls
-// back to the default rate bucket for templates not in our own registry
-// (e.g. the fixed "testing_address" verification-ping template).
-async function getTemplateCategory(clientId: string, templateName: string): Promise<string> {
+// Looks up everything about a submitted template that sending needs — the
+// WCC rate category, plus the durable header info persisted at submission
+// time (see wa-template-header-media-migration.sql). Combined into one
+// query so sendTemplateMessage doesn't have to hit the DB twice per send.
+interface TemplateMeta {
+  category: string
+  headerFormat: 'TEXT' | 'IMAGE' | 'VIDEO' | 'DOCUMENT' | null
+  headerMediaData: string | null
+  headerMediaMime: string | null
+  headerMediaFilename: string | null
+}
+
+async function getTemplateMeta(clientId: string, templateName: string): Promise<TemplateMeta> {
   const row = (
-    await query<{ category: string | null }>(
-      'SELECT category FROM wa_templates WHERE client_id = $1 AND name = $2 LIMIT 1',
+    await query<{
+      category: string | null
+      header_format: string | null
+      header_media_data: string | null
+      header_media_mime: string | null
+      header_media_filename: string | null
+    }>(
+      `SELECT category, header_format, header_media_data, header_media_mime, header_media_filename
+       FROM wa_templates WHERE client_id = $1 AND name = $2 LIMIT 1`,
       [clientId, templateName]
     )
   )[0]
-  return (row?.category || DEFAULT_MESSAGE_CATEGORY).toLowerCase()
+  return {
+    category: (row?.category || DEFAULT_MESSAGE_CATEGORY).toLowerCase(),
+    headerFormat: (row?.header_format as TemplateMeta['headerFormat']) || null,
+    headerMediaData: row?.header_media_data || null,
+    headerMediaMime: row?.header_media_mime || null,
+    headerMediaFilename: row?.header_media_filename || null,
+  }
 }
 
 // Sends an approved template message — used for nurture sequence sends and
@@ -134,6 +154,14 @@ async function getTemplateCategory(clientId: string, templateName: string): Prom
 // marketing, utility, and authentication template sends, broadcasts (just
 // repeated calls to this function), and any media/document header inside
 // the template — all billed at that template's category rate.
+//
+// If this template has a stored IMAGE/VIDEO/DOCUMENT header (see
+// getTemplateMeta), that media is (re-)uploaded to Meta fresh on every
+// call — Meta requires a live media id or URL at send time, not the
+// one-time example handle used when the template was submitted for
+// approval, so there is no way to "attach once" and skip this step on
+// later sends. A stored TEXT header needs no per-send parameter; Meta
+// renders the approved static text automatically.
 export async function sendTemplateMessage(params: {
   clientId: string
   to: string
@@ -149,11 +177,34 @@ export async function sendTemplateMessage(params: {
     return { ok: true, wamid: `stub-${Date.now()}` }
   }
 
-  const category = await getTemplateCategory(params.clientId, params.templateName)
+  const meta = await getTemplateMeta(params.clientId, params.templateName)
+
+  const components = params.components ? [...params.components] : []
+  const hasHeaderAlready = components.some((c) => String(c?.type).toUpperCase() === 'HEADER')
+
+  if (!hasHeaderAlready && meta.headerFormat && meta.headerFormat !== 'TEXT' && meta.headerMediaData) {
+    const upload = await uploadMediaForSending({
+      phoneNumberId: creds.phoneNumberId,
+      accessToken: creds.accessToken,
+      base64Data: meta.headerMediaData,
+      mimeType: meta.headerMediaMime || 'application/octet-stream',
+      fileName: meta.headerMediaFilename || 'attachment',
+    })
+    if (!upload.ok) {
+      return { ok: false, error: `Could not attach header media: ${upload.error}` }
+    }
+
+    const key = meta.headerFormat.toLowerCase() // image | video | document
+    const mediaParam: Record<string, any> = { id: upload.handle }
+    if (meta.headerFormat === 'DOCUMENT' && meta.headerMediaFilename) {
+      mediaParam.filename = meta.headerMediaFilename
+    }
+    components.unshift({ type: 'header', parameters: [{ type: key, [key]: mediaParam }] })
+  }
 
   const debit = await debitForMessage({
     clientId: params.clientId,
-    category,
+    category: meta.category,
     templateName: params.templateName,
   })
   if (!debit.ok) {
@@ -166,12 +217,12 @@ export async function sendTemplateMessage(params: {
     template: {
       name: params.templateName,
       language: { code: params.languageCode || 'en' },
-      components: params.components || [],
+      components,
     },
   })
 
   if (!result.ok) {
-    await refundMessage({ clientId: params.clientId, category, templateName: params.templateName })
+    await refundMessage({ clientId: params.clientId, category: meta.category, templateName: params.templateName })
   } else if (result.wamid) {
     await attachWamidToLatestDebit({
       clientId: params.clientId,
@@ -410,6 +461,41 @@ export async function uploadTemplateMediaForHandle(params: {
     }
 
     return { ok: true, handle: uploadData.h }
+  } catch (err: any) {
+    return { ok: false, error: err.message || 'Request to Meta failed' }
+  }
+}
+
+// The SEND-time counterpart to uploadTemplateMediaForHandle above — a
+// completely separate, simpler Meta API (the regular, non-resumable Media
+// API) that has to be called fresh before every message that carries a
+// media header, because the resumable-upload handle used at template
+// *submission* time is not valid for actually sending. Returns a media id
+// that's referenced in that one outgoing message's header parameter.
+export async function uploadMediaForSending(params: {
+  phoneNumberId: string
+  accessToken: string
+  base64Data: string
+  mimeType: string
+  fileName: string
+}): Promise<MediaUploadResult> {
+  try {
+    const buffer = Buffer.from(params.base64Data, 'base64')
+    const form = new FormData()
+    form.append('messaging_product', 'whatsapp')
+    form.append('file', new Blob([new Uint8Array(buffer)], { type: params.mimeType }), params.fileName)
+
+    const url = withAppSecretProof(`${GRAPH_API_URL}/${params.phoneNumberId}/media`, params.accessToken)
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${params.accessToken}` },
+      body: form,
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok || !data?.id) {
+      return { ok: false, error: data?.error?.message || `Meta API returned ${res.status}` }
+    }
+    return { ok: true, handle: data.id }
   } catch (err: any) {
     return { ok: false, error: err.message || 'Request to Meta failed' }
   }
