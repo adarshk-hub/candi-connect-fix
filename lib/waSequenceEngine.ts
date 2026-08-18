@@ -124,7 +124,7 @@ async function sendDueMessage(msg: any): Promise<void> {
      VALUES ($1, 'outbound', 'template', $2, $3, $4, $5, $6, $7)`,
     [
       sequence.lead_id,
-      `[Day ${msg.day_number}] ${msg.template_name} template ${result.ok ? 'sent' : 'failed to send'}.`,
+      `[Day ${msg.day_number}] ${msg.template_name} template ${result.ok ? 'sent' : `failed to send: ${result.error || 'unknown error'}`}.`,
       msg.template_name,
       result.ok ? 'sent' : 'failed',
       result.wamid || null,
