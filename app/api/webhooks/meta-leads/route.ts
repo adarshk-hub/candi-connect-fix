@@ -3,6 +3,7 @@ import { query } from '@/lib/db'
 import { verifySignature, fetchLeadFields } from '@/lib/metaLeadAds'
 import { findOrCreateLead, findOrCreateCampaign } from '@/lib/leadIntake'
 import { fireCapiEventForLead } from '@/lib/capiTriggers'
+import { startSequence } from '@/lib/waSequenceEngine'
 
 // Meta's one-time subscription handshake: echoes hub.challenge back if
 // hub.verify_token matches what you configured in the Meta App dashboard.
@@ -78,9 +79,16 @@ export async function POST(req: NextRequest) {
       // Ads lead_id itself (the strongest match key available for this
       // channel) — mainly useful for institutes running the CAPI Gateway
       // or wanting deduped/offline-safe attribution rather than relying on
-      // Meta's own client-side capture of the form submit.
+      // Meta's own client-side capture of the form submit. Also kicks off
+      // the WhatsApp welcome sequence (Day 0 template, sent immediately)
+      // for genuinely new leads only — never for a duplicate/merged touch.
       if (created) {
         void fireCapiEventForLead({ lead, trigger: 'lead_created', eventIdSeed: `lead:${lead.id}` })
+        startSequence(lead.id)
+          .then((r) => {
+            if (!r.ok) console.error(`[meta-leads webhook] Could not start welcome sequence for lead ${lead.id}: ${r.error}`)
+          })
+          .catch((err) => console.error(`[meta-leads webhook] startSequence threw for lead ${lead.id}`, err))
       }
 
       results.push({ leadId: lead.id, created, duplicate })
