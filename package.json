@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@types/nodemailer": "^8.0.1",
+    "@vercel/functions": "^3.9.3",
     "bcryptjs": "^2.4.3",
     "clsx": "^2.1.1",
     "jsonwebtoken": "^9.0.2",
