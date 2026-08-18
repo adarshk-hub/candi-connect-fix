@@ -274,10 +274,20 @@ export async function submitTemplateToMeta(params: {
         status: (data.status ? String(data.status).toLowerCase() : 'pending') as TemplateSubmitResult['status'],
       }
     }
-    return {
+        return {
       ok: false,
       status: 'rejected',
-      rejectionReason: data?.error?.message || `Meta returned ${res.status}`,
+      // Meta's top-level error.message is often a generic category label
+      // (e.g. "Invalid parameter") while the actually useful, specific
+      // explanation sits in error_user_msg / error_user_title /
+      // error_data.details — surface whichever of those is present so the
+      // Notes column shows something a person can act on, not just the
+      // generic label repeated back.
+      rejectionReason:
+        data?.error?.error_user_msg ||
+        data?.error?.error_data?.details ||
+        [data?.error?.error_user_title, data?.error?.message].filter(Boolean).join(': ') ||
+        `Meta returned ${res.status}`,
     }
   } catch (err: any) {
     return { ok: false, status: 'rejected', rejectionReason: err?.message || 'Request to Meta failed' }
