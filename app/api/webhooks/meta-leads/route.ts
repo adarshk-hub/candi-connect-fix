@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { waitUntil } from '@vercel/functions'
 import { query } from '@/lib/db'
 import { verifySignature, fetchLeadFields } from '@/lib/metaLeadAds'
 import { findOrCreateLead, findOrCreateCampaign } from '@/lib/leadIntake'
@@ -82,13 +83,19 @@ export async function POST(req: NextRequest) {
       // Meta's own client-side capture of the form submit. Also kicks off
       // the WhatsApp welcome sequence (Day 0 template, sent immediately)
       // for genuinely new leads only — never for a duplicate/merged touch.
+      // Both wrapped in waitUntil(): Vercel can freeze this function the
+      // instant the response below is sent, so an un-awaited promise on
+      // its own isn't reliable — waitUntil keeps it alive to actually
+      // finish, without making the webhook response wait on it.
       if (created) {
-        void fireCapiEventForLead({ lead, trigger: 'lead_created', eventIdSeed: `lead:${lead.id}` })
-        startSequence(lead.id)
-          .then((r) => {
-            if (!r.ok) console.error(`[meta-leads webhook] Could not start welcome sequence for lead ${lead.id}: ${r.error}`)
-          })
-          .catch((err) => console.error(`[meta-leads webhook] startSequence threw for lead ${lead.id}`, err))
+        waitUntil(fireCapiEventForLead({ lead, trigger: 'lead_created', eventIdSeed: `lead:${lead.id}` }))
+        waitUntil(
+          startSequence(lead.id)
+            .then((r) => {
+              if (!r.ok) console.error(`[meta-leads webhook] Could not start welcome sequence for lead ${lead.id}: ${r.error}`)
+            })
+            .catch((err) => console.error(`[meta-leads webhook] startSequence threw for lead ${lead.id}`, err))
+        )
       }
 
       results.push({ leadId: lead.id, created, duplicate })
