@@ -139,18 +139,16 @@ export async function POST(req: NextRequest) {
     // Fires the Day 0 welcome template (e.g. hello_candid) immediately —
     // this is a brand-new lead the counsellor just entered by hand, so it
     // should feel like the same "first touch" as a lead arriving from an
-    // ad or landing page. Never blocks/fails lead creation itself: a
-    // missing WhatsApp config or no sequence templates just means
-    // startSequence returns { ok: false }, which we only log — and any
-    // unexpected throw is caught here too, same reasoning.
-    try {
-      const seqResult = await startSequence(lead.id)
-      if (!seqResult.ok) {
-        console.error(`[leads] Could not start welcome sequence for lead ${lead.id}: ${seqResult.error}`)
-      }
-    } catch (err) {
-      console.error(`[leads] startSequence threw for lead ${lead.id}`, err)
-    }
+    // ad or landing page. Deliberately NOT awaited: this makes real
+    // network calls to Meta (send Day 0, then upload + send Day 2), which
+    // can take several seconds — the person filling out the form should
+    // see it save instantly, not wait on WhatsApp delivery. Same
+    // fire-and-forget pattern as the webhook intake routes.
+    startSequence(lead.id)
+      .then((r) => {
+        if (!r.ok) console.error(`[leads] Could not start welcome sequence for lead ${lead.id}: ${r.error}`)
+      })
+      .catch((err) => console.error(`[leads] startSequence threw for lead ${lead.id}`, err))
 
     return NextResponse.json(lead)
   } catch (err: any) {
