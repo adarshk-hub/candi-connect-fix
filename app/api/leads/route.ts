@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { query } from '@/lib/db'
 import { getSession, AGENCY_ROLES } from '@/lib/auth'
 import { handleWriteError } from '@/lib/apiError'
+import { startSequence } from '@/lib/waSequenceEngine'
 
 const DEFAULT_PAGE_SIZE = 250
 
@@ -134,6 +135,22 @@ export async function POST(req: NextRequest) {
        VALUES ($1, 'system', 'Lead Created', $2, $3)`,
       [lead.id, `New lead added manually: ${fullName} - ${whatsappNumber}.`, session.id]
     )
+
+    // Fires the Day 0 welcome template (e.g. hello_candid) immediately —
+    // this is a brand-new lead the counsellor just entered by hand, so it
+    // should feel like the same "first touch" as a lead arriving from an
+    // ad or landing page. Never blocks/fails lead creation itself: a
+    // missing WhatsApp config or no sequence templates just means
+    // startSequence returns { ok: false }, which we only log — and any
+    // unexpected throw is caught here too, same reasoning.
+    try {
+      const seqResult = await startSequence(lead.id)
+      if (!seqResult.ok) {
+        console.error(`[leads] Could not start welcome sequence for lead ${lead.id}: ${seqResult.error}`)
+      }
+    } catch (err) {
+      console.error(`[leads] startSequence threw for lead ${lead.id}`, err)
+    }
 
     return NextResponse.json(lead)
   } catch (err: any) {
