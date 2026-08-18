@@ -1,5 +1,5 @@
 import { query } from './db'
-import { sendTemplateMessage } from './metaWhatsapp'
+import { sendTemplateMessage, getTemplateBodyVariableCount } from './metaWhatsapp'
 import { NURTURE_STEPS } from './nurtureSteps'
 
 interface SequenceStep {
@@ -50,7 +50,7 @@ export async function startSequence(leadId: string): Promise<{ ok: boolean; sequ
 
   await query('UPDATE leads SET wa_sequence_id = $1 WHERE id = $2', [sequence.id, leadId])
 
-    const now = new Date()
+  const now = new Date()
   for (const step of steps) {
     const scheduledFor = new Date(now.getTime() + step.day * 24 * 60 * 60 * 1000)
     await query(
@@ -90,6 +90,27 @@ async function sendDueMessage(msg: any): Promise<void> {
 
   const lead = (await query('SELECT * FROM leads WHERE id = $1', [sequence.lead_id]))[0]
 
+  // A template's approved body might have zero variables (a fully static
+  // welcome/notice line) or several — sending a fixed one-parameter guess
+  // gets rejected outright by Meta (#132000) the moment it doesn't match.
+  // Only the first variable is auto-filled (the lead's name, matching this
+  // app's convention everywhere else a template is sent); anything beyond
+  // that isn't something this scheduled engine has data for, so it's left
+  // blank rather than guessed.
+  const variableCount = await getTemplateBodyVariableCount(sequence.client_id, msg.template_name)
+  const bodyComponents =
+    variableCount > 0
+      ? [
+          {
+            type: 'body',
+            parameters: Array.from({ length: variableCount }, (_, i) => ({
+              type: 'text',
+              text: i === 0 ? lead?.full_name || 'there' : '',
+            })),
+          },
+        ]
+      : []
+
   let result: { ok: boolean; wamid?: string; error?: string }
   try {
     result = await sendTemplateMessage({
@@ -97,12 +118,7 @@ async function sendDueMessage(msg: any): Promise<void> {
       to: sequence.phone_number,
       templateName: msg.template_name,
       languageCode: msg.language_code,
-      components: [
-        {
-          type: 'body',
-          parameters: [{ type: 'text', text: lead?.full_name || 'there' }],
-        },
-      ],
+      components: bodyComponents,
     })
   } catch (err: any) {
     // A row already claimed as 'processing' must not get stuck there if
