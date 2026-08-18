@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { query } from '@/lib/db'
 import { findOrCreateLead } from '@/lib/leadIntake'
 import { fireCapiEventForLead } from '@/lib/capiTriggers'
+import { startSequence } from '@/lib/waSequenceEngine'
 
 // Generic intake for any client website/landing-page form. Auth is a bearer
 // token equal to the client's clients.api_key (see Settings page for the
@@ -45,8 +46,9 @@ export async function POST(req: NextRequest) {
     fbp: body.fbp || null,
   })
 
-  // Only the first touch fires the Lead event — a duplicate submit from a
-  // number that's already a lead is a re-engagement, not a new conversion.
+  // Only the first touch fires the Lead event and the WhatsApp welcome
+  // sequence — a duplicate submit from a number that's already a lead is
+  // a re-engagement, not a new conversion, and shouldn't restart Day 0.
   if (created) {
     void fireCapiEventForLead({
       lead,
@@ -55,6 +57,11 @@ export async function POST(req: NextRequest) {
       clientIpAddress: req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || null,
       clientUserAgent: req.headers.get('user-agent'),
     })
+    startSequence(lead.id)
+      .then((r) => {
+        if (!r.ok) console.error(`[landing-page webhook] Could not start welcome sequence for lead ${lead.id}: ${r.error}`)
+      })
+      .catch((err) => console.error(`[landing-page webhook] startSequence threw for lead ${lead.id}`, err))
   }
 
   return NextResponse.json({ ok: true, leadId: lead.id, created, duplicate })
