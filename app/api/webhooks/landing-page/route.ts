@@ -1,6 +1,7 @@
 //Re
 
 import { NextRequest, NextResponse } from 'next/server'
+import { waitUntil } from '@vercel/functions'
 import { query } from '@/lib/db'
 import { findOrCreateLead } from '@/lib/leadIntake'
 import { fireCapiEventForLead } from '@/lib/capiTriggers'
@@ -49,19 +50,27 @@ export async function POST(req: NextRequest) {
   // Only the first touch fires the Lead event and the WhatsApp welcome
   // sequence — a duplicate submit from a number that's already a lead is
   // a re-engagement, not a new conversion, and shouldn't restart Day 0.
+  // Both wrapped in waitUntil(): Vercel can freeze this function the
+  // instant the response below is sent, so an un-awaited promise on its
+  // own isn't reliable — waitUntil keeps it alive to actually finish,
+  // without making the webhook response wait on it.
   if (created) {
-    void fireCapiEventForLead({
-      lead,
-      trigger: 'lead_created',
-      eventIdSeed: `lead:${lead.id}`,
-      clientIpAddress: req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || null,
-      clientUserAgent: req.headers.get('user-agent'),
-    })
-    startSequence(lead.id)
-      .then((r) => {
-        if (!r.ok) console.error(`[landing-page webhook] Could not start welcome sequence for lead ${lead.id}: ${r.error}`)
+    waitUntil(
+      fireCapiEventForLead({
+        lead,
+        trigger: 'lead_created',
+        eventIdSeed: `lead:${lead.id}`,
+        clientIpAddress: req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || null,
+        clientUserAgent: req.headers.get('user-agent'),
       })
-      .catch((err) => console.error(`[landing-page webhook] startSequence threw for lead ${lead.id}`, err))
+    )
+    waitUntil(
+      startSequence(lead.id)
+        .then((r) => {
+          if (!r.ok) console.error(`[landing-page webhook] Could not start welcome sequence for lead ${lead.id}: ${r.error}`)
+        })
+        .catch((err) => console.error(`[landing-page webhook] startSequence threw for lead ${lead.id}`, err))
+    )
   }
 
   return NextResponse.json({ ok: true, leadId: lead.id, created, duplicate })
