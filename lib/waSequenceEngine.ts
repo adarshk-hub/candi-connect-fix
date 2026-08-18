@@ -50,7 +50,7 @@ export async function startSequence(leadId: string): Promise<{ ok: boolean; sequ
 
   await query('UPDATE leads SET wa_sequence_id = $1 WHERE id = $2', [sequence.id, leadId])
 
-  const now = new Date()
+    const now = new Date()
   for (const step of steps) {
     const scheduledFor = new Date(now.getTime() + step.day * 24 * 60 * 60 * 1000)
     await query(
@@ -60,15 +60,21 @@ export async function startSequence(leadId: string): Promise<{ ok: boolean; sequ
     )
   }
 
-  // Day 0 fires immediately rather than waiting for the next cron tick.
-  await sendDueMessage(
-    (
-      await query(
-        `SELECT * FROM wa_sequence_messages WHERE sequence_id = $1 AND day_number = 0`,
-        [sequence.id]
-      )
-    )[0]
+  // Day 0 and Day 2 both fire immediately, back to back, rather than
+  // waiting for their scheduled time (Day 2 would otherwise sit 'pending'
+  // for two real days before the cron/advanceDueMessages picks it up).
+  // Each send marks its own row 'sent' right away, so the later cron pass
+  // simply finds nothing pending for either and skips them — no risk of a
+  // duplicate send once the real Day 2 time rolls around. Day 4/7/10 are
+  // untouched and still follow the normal scheduled cadence from lead
+  // creation.
+  const day0AndDay2 = await query(
+    `SELECT * FROM wa_sequence_messages WHERE sequence_id = $1 AND day_number IN (0, 2) ORDER BY day_number ASC`,
+    [sequence.id]
   )
+  for (const msg of day0AndDay2) {
+    await sendDueMessage(msg)
+  }
 
   return { ok: true, sequenceId: sequence.id }
 }
