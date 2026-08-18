@@ -16,8 +16,14 @@ export const WA_CREDIT_RATES: Record<WaMessageCategory, number> = {
   marketing: 0.88,
   utility: 0.35,
   authentication: 0.35,
-  session: 0.1,
+  // Free — Meta itself doesn't charge for a free-form reply sent inside a
+  // window the *user* opened (a "service" conversation on Meta's side),
+  // so there's no real cost here to pass through. Only template sends
+  // (marketing/utility/authentication) that proactively open or restart
+  // a conversation are billed by Meta and carry a rate above.
+  session: 0,
 }
+
 
 export const DEFAULT_MESSAGE_CATEGORY: WaMessageCategory = 'utility'
 
