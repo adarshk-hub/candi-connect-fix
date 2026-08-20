@@ -15,7 +15,7 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
   if (!canCustomize(session, params.id)) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
   const rows = await query(
-    `SELECT id, name, logo_data_url, leads_per_page,
+    `SELECT id, name, logo_data_url, leads_per_page, show_lead_status_tabs,
             school_email, email_from_name, smtp_host, smtp_port, smtp_user,
             (smtp_pass IS NOT NULL AND smtp_pass != '') AS smtp_pass_set,
             meta_ad_account_id, meta_page_id
@@ -48,6 +48,10 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     }
     values.push(n)
     setClauses.push(`leads_per_page = $${values.length}`)
+  }
+  if (body.showLeadStatusTabs !== undefined) {
+    values.push(!!body.showLeadStatusTabs)
+    setClauses.push(`show_lead_status_tabs = $${values.length}`)
   }
   if (body.schoolEmail !== undefined) {
     values.push(body.schoolEmail || null)
@@ -91,7 +95,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     values.push(params.id)
     const rows = await query(
       `UPDATE clients SET ${setClauses.join(', ')} WHERE id = $${values.length}
-       RETURNING id, name, logo_data_url, leads_per_page,
+       RETURNING id, name, logo_data_url, leads_per_page, show_lead_status_tabs,
                  school_email, email_from_name, smtp_host, smtp_port, smtp_user,
                  (smtp_pass IS NOT NULL AND smtp_pass != '') AS smtp_pass_set,
                  meta_ad_account_id, meta_page_id`,
