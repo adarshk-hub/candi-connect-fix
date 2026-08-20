@@ -158,8 +158,8 @@ export async function processNextBatch(batchSize = 20): Promise<BroadcastBatchRe
     result.processed++
 
     const broadcast = (
-      await query<{ template_name: string; language_code: string; personalize_field: string; client_id: string }>(
-        'SELECT template_name, language_code, personalize_field, client_id FROM wa_broadcasts WHERE id = $1',
+      await query<{ name: string; template_name: string; language_code: string; personalize_field: string; client_id: string }>(
+        'SELECT name, template_name, language_code, personalize_field, client_id FROM wa_broadcasts WHERE id = $1',
         [recipient.broadcast_id]
       )
     )[0]
@@ -185,6 +185,26 @@ export async function processNextBatch(batchSize = 20): Promise<BroadcastBatchRe
       languageCode: broadcast.language_code,
       components,
     })
+
+    // Every broadcast send — success or failure — is logged into
+    // whatsapp_messages, the ONLY table the lead's WhatsApp tab
+    // (GET /api/leads/[id]/whatsapp/messages) actually reads from. Without
+    // this, a broadcast could show "completed" in Broadcast History while
+    // never appearing in a single lead's chat thread, which is exactly
+    // what was happening before this fix.
+    const logStatus = sendResult.ok ? 'sent' : 'failed'
+    await query(
+      `INSERT INTO whatsapp_messages
+         (lead_id, direction, message_type, body, template_name, status, wamid)
+       VALUES ($1, 'outbound', 'template', $2, $3, $4, $5)`,
+      [
+        recipient.lead_id,
+        `[Broadcast: ${broadcast.name}] ${broadcast.template_name} template ${sendResult.ok ? 'sent' : `failed to send: ${sendResult.error || 'unknown error'}`}.`,
+        broadcast.template_name,
+        logStatus,
+        sendResult.wamid || null,
+      ]
+    )
 
     if (sendResult.ok) {
       await query(
