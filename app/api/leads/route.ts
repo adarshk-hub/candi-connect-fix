@@ -45,13 +45,21 @@ export async function GET(req: NextRequest) {
   }
 
   if (tab === 'enrolled') {
-    where.push(`l.pipeline_stage = 'enrolled'`)
+    where.push(
+      `EXISTS (SELECT 1 FROM pipeline_stages ps WHERE ps.client_id = l.client_id AND ps.key = l.pipeline_stage AND ps.status_group = 'won')`
+    )
   } else if (tab === 'hot') {
-    where.push(`l.pipeline_stage != 'enrolled' AND l.lead_score >= 6`)
+    where.push(
+      `EXISTS (SELECT 1 FROM pipeline_stages ps WHERE ps.client_id = l.client_id AND ps.key = l.pipeline_stage AND ps.status_group = 'hot')`
+    )
   } else if (tab === 'warm') {
-    where.push(`l.pipeline_stage != 'enrolled' AND l.lead_score >= 3 AND l.lead_score < 6`)
+    where.push(
+      `EXISTS (SELECT 1 FROM pipeline_stages ps WHERE ps.client_id = l.client_id AND ps.key = l.pipeline_stage AND ps.status_group = 'warm')`
+    )
   } else if (tab === 'cold') {
-    where.push(`l.pipeline_stage != 'enrolled' AND l.lead_score < 3`)
+    where.push(
+      `EXISTS (SELECT 1 FROM pipeline_stages ps WHERE ps.client_id = l.client_id AND ps.key = l.pipeline_stage AND ps.status_group = 'cold')`
+    )
   }
 
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : ''
