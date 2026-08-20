@@ -131,4 +131,38 @@ export async function previewAudience(
   return { count: Number(count), sample }
 }
 
+// Full (capped) matching list for the audience picker — lets the person
+// building a broadcast see and individually check/uncheck every lead the
+// filters matched, rather than only a 10-row sample with no way to hand-
+// pick or exclude specific recipients. Capped rather than unbounded so a
+// very broad filter (e.g. no filters at all) can't return thousands of
+// rows into a checkbox list that would be unusable anyway; the count from
+// previewAudience() already tells the person how many would be included
+// if they don't narrow the filters further.
+const AUDIENCE_LIST_CAP = 500
+
+export async function listAudience(
+  clientId: string,
+  filters: BroadcastFilters,
+  requireContactMethod?: 'whatsapp_number' | 'email'
+): Promise<{ count: number; leads: AudienceLead[]; truncated: boolean }> {
+  const { whereSql, params } = buildAudienceQuery(clientId, filters, requireContactMethod)
+
+  const [{ count }] = await query<{ count: string }>(
+    `SELECT COUNT(*)::int AS count FROM leads l WHERE ${whereSql}`,
+    params
+  )
+
+  const leads = await query<AudienceLead>(
+    `SELECT l.id, l.full_name, l.child_name, l.whatsapp_number, l.email, l.pipeline_stage
+     FROM leads l WHERE ${whereSql}
+     ORDER BY l.created_at DESC
+     LIMIT ${AUDIENCE_LIST_CAP + 1}`,
+    params
+  )
+
+  const truncated = leads.length > AUDIENCE_LIST_CAP
+  return { count: Number(count), leads: leads.slice(0, AUDIENCE_LIST_CAP), truncated }
+}
+
 export { buildAudienceQuery }
