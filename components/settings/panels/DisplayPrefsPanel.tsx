@@ -5,6 +5,7 @@ import { Check } from 'lucide-react'
 
 export default function DisplayPrefsPanel({ clientId }: { clientId: string }) {
   const [leadsPerPage, setLeadsPerPage] = useState(250)
+  const [showLeadStatusTabs, setShowLeadStatusTabs] = useState(true)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -16,6 +17,7 @@ export default function DisplayPrefsPanel({ clientId }: { clientId: string }) {
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (data?.leads_per_page) setLeadsPerPage(data.leads_per_page)
+        if (data?.show_lead_status_tabs !== undefined) setShowLeadStatusTabs(!!data.show_lead_status_tabs)
         setLoading(false)
       })
       .catch(() => setLoading(false))
@@ -29,7 +31,7 @@ export default function DisplayPrefsPanel({ clientId }: { clientId: string }) {
       const res = await fetch(`/api/clients/${clientId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ leadsPerPage }),
+        body: JSON.stringify({ leadsPerPage, showLeadStatusTabs }),
       })
       if (!res.ok) {
         const body = await res.json().catch(() => ({}))
@@ -62,6 +64,22 @@ export default function DisplayPrefsPanel({ clientId }: { clientId: string }) {
           ))}
         </select>
         <span className="text-sm text-muted2">Choose how many leads to display per page</span>
+      </div>
+
+      <div className="mb-4 border-t border-border pt-4">
+        <label className="flex items-center gap-2.5">
+          <input
+            type="checkbox"
+            checked={showLeadStatusTabs}
+            onChange={(e) => setShowLeadStatusTabs(e.target.checked)}
+            className="h-4 w-4"
+          />
+          <span className="text-sm text-fg">Show Warm / Hot / Cold / Enrolled tabs in the sidebar</span>
+        </label>
+        <p className="mt-1 pl-6 text-xs text-muted2">
+          When off, these sub-links under "All Leads" are hidden for everyone at this institute — the leads
+          themselves aren't affected, just the shortcut links.
+        </p>
       </div>
 
       {error && <p className="mb-3 text-sm text-red-400">{error}</p>}
