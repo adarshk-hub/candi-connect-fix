@@ -64,7 +64,13 @@ function NavItem({
   )
 }
 
-export default function Sidebar({ user }: { user: SidebarUser | null }) {
+export default function Sidebar({
+  user,
+  showLeadStatusTabs = true,
+}: {
+  user: SidebarUser | null
+  showLeadStatusTabs?: boolean
+}) {
   const pathname = usePathname()
   const router = useRouter()
   const searchParams = useSearchParams()
@@ -130,7 +136,7 @@ export default function Sidebar({ user }: { user: SidebarUser | null }) {
 
         <div className="pt-2">
           <NavItem href="/leads" icon={Users} label="All Leads" active={leadsActive && !tab} collapsed={collapsed} />
-          {leadsActive && !collapsed && (
+          {leadsActive && !collapsed && showLeadStatusTabs && (
             <div className="ml-4 mt-1 space-y-0.5 border-l border-border pl-3">
               <NavItem href="/leads?tab=warm" icon={ThermometerSun} label="Warm" active={tab === 'warm'} collapsed={false} />
               <NavItem href="/leads?tab=hot" icon={Flame} label="Hot" active={tab === 'hot'} collapsed={false} />
