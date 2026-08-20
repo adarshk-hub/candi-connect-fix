@@ -76,6 +76,7 @@ export async function POST(req: NextRequest) {
       personalizeField,
       filters,
       createdBy: session!.id,
+      explicitLeadIds: Array.isArray(body?.explicitLeadIds) ? body.explicitLeadIds : null,
     })
 
     if (totalRecipients === 0) {
