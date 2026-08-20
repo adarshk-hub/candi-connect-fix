@@ -1,9 +1,11 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { useRouter } from 'next/navigation'
 import { Check } from 'lucide-react'
 
 export default function DisplayPrefsPanel({ clientId }: { clientId: string }) {
+  const router = useRouter()
   const [leadsPerPage, setLeadsPerPage] = useState(250)
   const [showLeadStatusTabs, setShowLeadStatusTabs] = useState(true)
   const [loading, setLoading] = useState(true)
@@ -39,6 +41,12 @@ export default function DisplayPrefsPanel({ clientId }: { clientId: string }) {
         return
       }
       setStatus('Saved.')
+      // The sidebar's show/hide state comes from a server-rendered value
+      // computed once in app/layout.tsx, not re-fetched on client-side
+      // navigation — without this, the toggle would silently take effect
+      // only after a manual browser reload, which feels broken even
+      // though the save itself succeeded.
+      router.refresh()
     } catch (err: any) {
       setError(err?.message || 'Network error — could not reach the server')
     } finally {
