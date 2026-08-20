@@ -1,6 +1,12 @@
 import { query } from './db'
 import { sendTemplateMessage } from './metaWhatsapp'
-import { buildAudienceQuery, previewAudience as previewAudienceShared, BroadcastFilters, AudienceLead } from './leadAudience'
+import {
+  buildAudienceQuery,
+  previewAudience as previewAudienceShared,
+  listAudience as listAudienceShared,
+  BroadcastFilters,
+  AudienceLead,
+} from './leadAudience'
 
 export type { BroadcastFilters, AudienceLead }
 
@@ -15,6 +21,15 @@ export async function previewAudience(
   return previewAudienceShared(clientId, filters, 'whatsapp_number', sampleSize)
 }
 
+// Full checkbox-able audience list — see lib/leadAudience.ts listAudience
+// for why this is capped rather than unbounded.
+export async function listAudience(
+  clientId: string,
+  filters: BroadcastFilters
+): Promise<{ count: number; leads: AudienceLead[]; truncated: boolean }> {
+  return listAudienceShared(clientId, filters, 'whatsapp_number')
+}
+
 export interface CreateBroadcastParams {
   clientId: string
   name: string
@@ -24,6 +39,13 @@ export interface CreateBroadcastParams {
   personalizeField: 'none' | 'full_name' | 'child_name'
   filters: BroadcastFilters
   createdBy?: string | null
+  // When the person has hand-picked/deselected specific leads from the
+  // audience picker, this carries exactly which lead ids to send to —
+  // takes priority over re-resolving `filters` at send time, so what they
+  // saw and checked in the picker is exactly who gets messaged, not a
+  // fresh filter match that could have drifted (a lead's stage or tags
+  // changing between preview and send, for instance).
+  explicitLeadIds?: string[] | null
 }
 
 // Creates the broadcast row and immediately inserts one
@@ -32,8 +54,6 @@ export interface CreateBroadcastParams {
 // function just snapshots the audience and queues it up, so it stays
 // fast even for large audiences.
 export async function createBroadcast(params: CreateBroadcastParams): Promise<{ broadcastId: string; totalRecipients: number }> {
-  const { whereSql, params: audienceParams } = buildAudienceQuery(params.clientId, params.filters, 'whatsapp_number')
-
   const broadcast = (
     await query<{ id: string }>(
       `INSERT INTO wa_broadcasts
@@ -62,17 +82,37 @@ export async function createBroadcast(params: CreateBroadcastParams): Promise<{ 
     )
   )[0]
 
-  const inserted = await query<{ count: string }>(
-    `WITH matched AS (
-       SELECT l.id AS lead_id, l.whatsapp_number AS phone_number
-       FROM leads l
-       WHERE ${whereSql}
-     )
-     INSERT INTO wa_broadcast_recipients (broadcast_id, lead_id, phone_number)
-     SELECT $${audienceParams.length + 1}, lead_id, phone_number FROM matched
-     RETURNING 1 AS one`,
-    [...audienceParams, broadcast.id]
-  )
+  let inserted: { count: string }[]
+  if (params.explicitLeadIds && params.explicitLeadIds.length > 0) {
+    // Hand-picked audience — still scoped to this client and still
+    // requires a phone number, same as the filter path; a client-supplied
+    // id list is never trusted blindly (e.g. an id belonging to a
+    // different institute, or a lead missing a number).
+    inserted = await query<{ count: string }>(
+      `WITH matched AS (
+         SELECT l.id AS lead_id, l.whatsapp_number AS phone_number
+         FROM leads l
+         WHERE l.client_id = $1 AND l.id = ANY($2) AND l.whatsapp_number IS NOT NULL AND l.whatsapp_number <> ''
+       )
+       INSERT INTO wa_broadcast_recipients (broadcast_id, lead_id, phone_number)
+       SELECT $3, lead_id, phone_number FROM matched
+       RETURNING 1 AS one`,
+      [params.clientId, params.explicitLeadIds, broadcast.id]
+    )
+  } else {
+    const { whereSql, params: audienceParams } = buildAudienceQuery(params.clientId, params.filters, 'whatsapp_number')
+    inserted = await query<{ count: string }>(
+      `WITH matched AS (
+         SELECT l.id AS lead_id, l.whatsapp_number AS phone_number
+         FROM leads l
+         WHERE ${whereSql}
+       )
+       INSERT INTO wa_broadcast_recipients (broadcast_id, lead_id, phone_number)
+       SELECT $${audienceParams.length + 1}, lead_id, phone_number FROM matched
+       RETURNING 1 AS one`,
+      [...audienceParams, broadcast.id]
+    )
+  }
 
   const totalRecipients = inserted.length
   await query('UPDATE wa_broadcasts SET total_recipients = $1 WHERE id = $2', [totalRecipients, broadcast.id])
