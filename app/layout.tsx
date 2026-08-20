@@ -40,8 +40,11 @@ export default async function RootLayout({ children }: { children: React.ReactNo
       [session.clientId]
     )
     if (rows[0]) showLeadStatusTabs = rows[0].show_lead_status_tabs
+  } else if (session) {
+    const rows = await query<{ show_lead_status_tabs: boolean }>('SELECT show_lead_status_tabs FROM clients')
+    if (rows.length === 1) showLeadStatusTabs = rows[0].show_lead_status_tabs
   }
-
+  
   return (
     <html lang="en" className="dark" suppressHydrationWarning>
       <head>
