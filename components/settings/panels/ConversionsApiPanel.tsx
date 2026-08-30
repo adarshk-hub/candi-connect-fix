@@ -272,8 +272,11 @@ export default function ConversionsApiPanel({ clientId }: { clientId: string }) 
                   <td className="px-3 py-2 text-fg">{e.lead_name || '—'}</td>
                   <td className="px-3 py-2 text-fg">{e.event_name}</td>
                   <td className="px-3 py-2">{statusPill(e.status)}</td>
-                  <td className="max-w-xs truncate px-3 py-2 text-xs text-muted2" title={e.error || e.fbtrace_id || ''}>
-                    {e.error || e.fbtrace_id || '—'}
+                  <td
+                    className="max-w-xs truncate px-3 py-2 text-xs text-muted2"
+                    title={[e.error, e.fbtrace_id ? `fbtrace_id: ${e.fbtrace_id}` : null].filter(Boolean).join(' — ')}
+                  >
+                    {e.error || (e.fbtrace_id ? `fbtrace_id: ${e.fbtrace_id}` : '—')}
                   </td>
                 </tr>
               ))}
