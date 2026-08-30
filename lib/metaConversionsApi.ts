@@ -2,7 +2,7 @@
 import crypto from 'crypto'
 import { query } from './db'
 
-const META_API_VERSION = process.env.META_MARKETING_API_VERSION || 'v19.0'
+const META_API_VERSION = process.env.META_MARKETING_API_VERSION || 'v26.0'
 
 // Re-exported for convenience so server code can `import { META_STANDARD_EVENTS } from './metaConversionsApi'`
 // — the canonical definition lives in lib/types.ts because that file is
@@ -91,6 +91,20 @@ export async function sendCapiEvent(params: SendCapiEventParams): Promise<SendCa
   if (match.clientUserAgent) userData.client_user_agent = match.clientUserAgent
   if (match.leadId) userData.lead_id = match.leadId
 
+  // Meta's CRM integration flow (the "Connect data > CRM" dataset setup —
+  // as opposed to a plain browser/pixel dataset) requires custom_data to
+  // identify the event as CRM-sourced: event_source: "crm" and
+  // lead_event_source: "<your CRM's name>". This isn't optional decoration
+  // for CRM-type datasets — omitting it is a documented reason events sent
+  // via this integration type don't get credited/shown correctly, separate
+  // from any transport-level failure. Always included, with any caller-
+  // supplied customData layered on top (never overriding these two keys).
+  const customDataPayload = {
+    ...customData,
+    event_source: 'crm',
+    lead_event_source: 'Candi Connect',
+  }
+
   const eventPayload = {
     event_name: eventName,
     event_time: eventTime,
@@ -98,7 +112,7 @@ export async function sendCapiEvent(params: SendCapiEventParams): Promise<SendCa
     action_source: 'system_generated',
     ...(eventSourceUrl ? { event_source_url: eventSourceUrl } : {}),
     user_data: userData,
-    ...(customData ? { custom_data: customData } : {}),
+    custom_data: customDataPayload,
   }
 
   const body: Record<string, any> = {
