@@ -58,6 +58,7 @@ export interface SendCapiEventResult {
   ok: boolean
   fbtraceId?: string
   error?: string
+  warnings?: string
 }
 
 // Sends one server-side event to Meta's Conversions API and writes an audit
@@ -133,7 +134,24 @@ export async function sendCapiEvent(params: SendCapiEventParams): Promise<SendCa
     if (!res.ok) {
       result = { ok: false, error: json?.error?.message || `Meta returned ${res.status}`, fbtraceId: json?.error?.fbtrace_id }
     } else {
-      result = { ok: true, fbtraceId: json?.fbtrace_id }
+      // A 200 OK only means Meta accepted the HTTP request — it doesn't
+      // mean the event was fully processed with no complaints. Meta can
+      // return warnings in `messages` (e.g. an expired/invalid
+      // test_event_code) alongside a perfectly normal-looking
+      // fbtrace_id, and `events_received: 0` on an ostensibly successful
+      // call is itself a sign the event was accepted but then dropped.
+      // Surface both instead of only recording the fbtrace_id.
+      const messages: string[] = Array.isArray(json?.messages)
+        ? json.messages.map((m: any) => (typeof m === 'string' ? m : JSON.stringify(m)))
+        : []
+      if (typeof json?.events_received === 'number' && json.events_received === 0) {
+        messages.push('Meta returned events_received: 0 — the event was accepted but not counted as processed.')
+      }
+      result = {
+        ok: true,
+        fbtraceId: json?.fbtrace_id,
+        warnings: messages.length ? messages.join(' | ') : undefined,
+      }
     }
   } catch (err: any) {
     result = { ok: false, error: err?.message || 'Network error calling Meta Conversions API' }
@@ -150,7 +168,7 @@ export async function sendCapiEvent(params: SendCapiEventParams): Promise<SendCa
       pipelineStage,
       result.ok ? 'sent' : 'failed',
       result.fbtraceId || null,
-      result.error || null,
+      result.error || result.warnings || null,
       JSON.stringify(eventPayload),
     ]
   )
